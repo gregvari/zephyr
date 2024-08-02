@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
-config COUNTER_MAXIM_DS3231
+config RTC_DS3231
 	bool "Maxim DS3231 RTC/TCXO"
 	default y
 	depends on DT_HAS_MAXIM_DS3231_ENABLED

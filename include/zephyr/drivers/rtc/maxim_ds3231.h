@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2019 Peter Bigot Consulting, LLC
+ * Modified by Gergo Vari
  *
  * SPDX-License-Identifier: Apache-2.0
  */

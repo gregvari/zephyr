@@ -9,12 +9,11 @@ description: Maxim DS3231 I2C RTC/TCXO
 
 compatible: "maxim,ds3231"
 
-include: [i2c-device.yaml, rtc-device.yaml]
+include:
+  - name: rtc-device.yaml
+  - name: i2c-device.yaml
 
 properties:
-  reg:
-    required: true
-
   32k-gpios:
     type: phandle-array
     description: |
