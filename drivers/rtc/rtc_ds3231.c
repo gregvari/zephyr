@@ -5,9 +5,9 @@
  * Copyright (c) 2024 Gergo Vari <work@varigergo.hu>
  */
 
-/* TODO: reimplement set_time, get_time */
-/* TODO: implement control */
 /* TODO: implement control status */
+/* TODO: implement abstracted settings */
+/* TODO: implement configurable settings */
 /* TODO: implement get_temp */
 /* TODO: implement 24h/ampm modes */
 /* TODO: handle century bit */
@@ -84,10 +84,10 @@ LOG_MODULE_REGISTER(ds3231, CONFIG_RTC_LOG_LEVEL);
 #define DS3231_BITS_ALARM_RATE        BIT(7)
 #define DS3231_BITS_ALARM_DATE_W_OR_M BIT(6)
 
-/* Control bitmasks */
 #define DS3231_BITS_SIGN BIT(7)
-#define DS3231_BITS_EOSC BIT(7) /* enable oscillator, active low */
-#define DS3231_BITS_SQW  BIT(6) /* enable square-wave */
+/* Control bitmasks */
+#define DS3231_BITS_CTRL_EOSC BIT(7) /* enable oscillator, active low */
+#define DS3231_BITS_CTRL_BBSQW  BIT(6) /* enable battery-backed square-wave */
 
 /*  Setting the CONV bit to 1 forces the temperature sensor to 
  *  convert the temperature into digital code and 
@@ -98,7 +98,7 @@ LOG_MODULE_REGISTER(ds3231, CONFIG_RTC_LOG_LEVEL);
  *  forcing the controller to start a new TCXO execution. 
  *  A user-initiated temperature conversion 
  *  does not affect the internal 64-second update cycle. */
-#define DS3231_BITS_CONV BIT(6) 
+#define DS3231_BITS_CTRL_CONV BIT(6) 
 
 /* Rate selectors */
 /* TODO: the datasheet is probably wrong and it's not 1Hz but 1kHz, should check though */
@@ -107,20 +107,20 @@ LOG_MODULE_REGISTER(ds3231, CONFIG_RTC_LOG_LEVEL);
  *  0  |  1  | 1.024kHz
  *  1  |  0  | 4.096kHz
  *  1  |  1  | 8.192kHz */
-#define DS3231_BITS_RS2 BIT(4) 
-#define DS3231_BITS_RS1 BIT(3) 
+#define DS3231_BITS_CTRL_RS2 BIT(4) 
+#define DS3231_BITS_CTRL_RS1 BIT(3) 
 
-#define DS3231_BITS_INTCTRL    BIT(2) 
-#define DS3231_BITS_ALARM_2_EN BIT(1) 
-#define DS3231_BITS_ALARM_1_EN BIT(0) 
+#define DS3231_BITS_CTRL_INTCTRL    BIT(2) 
+#define DS3231_BITS_CTRL_ALARM_2_EN BIT(1) 
+#define DS3231_BITS_CTRL_ALARM_1_EN BIT(0) 
 
 /* Control status bitmasks */
 /* For some reason you can access OSF in both control and control status registers. */
-#define DS3231_BITS_OSF          BIT(7) /* oscillator stop flag */
-#define DS3231_BITS_32_EN        BIT(3) /* 32kHz square-wave */
-#define DS3231_BITS_BSY          BIT(2) /* set when TXCO is busy, see CONV flag */
-#define DS3231_BITS_ALARM_2_FLAG BIT(1)
-#define DS3231_BITS_ALARM_1_FLAG BIT(0)
+#define DS3231_BITS_CTRL_STS_OSF          BIT(7) /* oscillator stop flag */
+#define DS3231_BITS_CTRL_STS_32_EN        BIT(3) /* 32kHz square-wave */
+#define DS3231_BITS_CTRL_STS_BSY          BIT(2) /* set when TXCO is busy, see CONV flag */
+#define DS3231_BITS_CTRL_STS_ALARM_2_FLAG BIT(1)
+#define DS3231_BITS_CTRL_STS_ALARM_1_FLAG BIT(0)
 
 /* Aging offset bitmask */
 #define DS3231_BITS_DATA BIT(6, 0)
@@ -129,7 +129,7 @@ LOG_MODULE_REGISTER(ds3231, CONFIG_RTC_LOG_LEVEL);
 #define DS3231_BITS_TEMP_MSB GENMASK(6, 0) /* integer portion */
 #define DS3231_BITS_TEMP_LSB GENMASK(7, 6) /* fractional portion */
 
-struct ds3231_config {
+struct ds3231_drv_conf {
 	struct i2c_dt_spec i2c_bus;
 };
 
@@ -140,7 +140,7 @@ struct ds3231_data {
 static int i2c_set_registers(const struct device *dev, uint8_t start_reg, const uint8_t *buf, const size_t buf_size) {
 	int err;
 	struct ds3231_data *data = dev->data;
-	const struct ds3231_config *config = dev->config;
+	const struct ds3231_drv_conf *config = dev->config;
 
 	k_spinlock_key_t key = k_spin_lock(&data->lock);
 
@@ -153,13 +153,75 @@ static int i2c_set_registers(const struct device *dev, uint8_t start_reg, const 
 static int i2c_get_registers(const struct device *dev, uint8_t start_reg, uint8_t *buf, const size_t buf_size) {
 	int err;
 	struct ds3231_data *data = dev->data;
-	const struct ds3231_config *config = dev->config;
+	const struct ds3231_drv_conf *config = dev->config;
 
 	k_spinlock_key_t key = k_spin_lock(&data->lock);
 
 	err = i2c_burst_read_dt(&config->i2c_bus, start_reg, buf, buf_size);
 
 	k_spin_unlock(&data->lock, key);
+	return err;
+}
+
+
+enum freq {FREQ_1000, FREQ_1024, FREQ_4096, FREQ_8192};
+struct ds3231_ctrl {
+	bool en_osc;
+
+	bool conv;
+
+	enum freq sqw_freq;
+
+	bool intctrl;
+	bool en_alarm_1;
+	bool en_alarm_2;
+};
+static int ds3231_ctrl_to_buf(const struct ds3231_ctrl *ctrl, uint8_t *buf) {
+	if (ctrl->en_alarm_1) {
+		*buf |= DS3231_BITS_CTRL_ALARM_1_EN;
+	}
+
+	if (ctrl->en_alarm_2) {
+		*buf |= DS3231_BITS_CTRL_ALARM_2_EN;
+	}
+
+	switch (ctrl->sqw_freq) {
+		case FREQ_1000:
+			break;
+		case FREQ_1024:
+			*buf |= DS3231_BITS_CTRL_RS1;
+			break;
+		case FREQ_4096:
+			*buf |= DS3231_BITS_CTRL_RS2;
+			break;
+		case FREQ_8192:
+			*buf |= DS3231_BITS_CTRL_RS1;
+			*buf |= DS3231_BITS_CTRL_RS2;
+			break;
+	}
+	if (ctrl->intctrl) {
+		*buf |= DS3231_BITS_CTRL_INTCTRL;
+	} else { /* enable sqw */
+		*buf |= DS3231_BITS_CTRL_BBSQW;
+	}
+
+	if (ctrl->conv) {
+		*buf |= DS3231_BITS_CTRL_CONV;
+	}
+
+	if (!ctrl->en_osc) { /* active low */
+		*buf |= DS3231_BITS_CTRL_EOSC;
+	}
+	return 0;
+}
+static int ds3231_set_ctrl(const struct device *dev, const struct ds3231_ctrl *ctrl) {
+	uint8_t buf;
+	int err = ds3231_ctrl_to_buf(ctrl, &buf);
+	if (err != 0) {
+		return err;
+	}
+	err = i2c_set_registers(dev, DS3231_REG_CTRL, &buf, 1);
+	printf("set_ctrl: %d\n", buf);
 	return err;
 }
 
@@ -182,6 +244,7 @@ static int ds3231_set_time(const struct device *dev, const struct rtc_time *tm)
 	/* here modulo 100 returns the last two digits of the year,
 	 * as the DS3231 chip can only store year data for 0-99,
 	 * hitting that ceiling can be detected with the century bit. */
+	/* TODO: figure out a way to store the WHOLE year, not just the last 2 digits */
 	buf[6] = bin2bcd((tm->tm_year % 100)) & DS3231_BITS_TIME_YEAR; 
 
 	return i2c_set_registers(dev, DS3231_REG_TIME_SECONDS, buf, buf_size);
@@ -203,7 +266,7 @@ static int ds3231_get_time(const struct device *dev, struct rtc_time *timeptr)
 	timeptr->tm_mday = bcd2bin(buf[4] & DS3231_BITS_TIME_DATE);
 	timeptr->tm_mon = bcd2bin(buf[5] & DS3231_BITS_TIME_MONTH);
 	timeptr->tm_year = bcd2bin(buf[6] & DS3231_BITS_TIME_YEAR);
-	timeptr->tm_year = timeptr->tm_year + 100;
+	timeptr->tm_year = timeptr->tm_year + 100; /* FIXME: we will always just set us to 20xx for year */
 	
 	timeptr->tm_nsec = 0;
 	timeptr->tm_isdst = -1;
@@ -242,35 +305,32 @@ static const struct rtc_driver_api ds3231_driver_api = {
 static int ds3231_init(const struct device *dev)
 {
 	int err;
-	const struct ds3231_config *config = dev->config;
-
+	const struct ds3231_drv_conf *config = dev->config;
 	if (!i2c_is_ready_dt(&config->i2c_bus)) {
 		LOG_ERR("I2C bus not ready.");
 		return -ENODEV;
 	}
+	
+	const struct ds3231_ctrl ctrl = {
+		true, /* enable oscillator */
+		false, /* disable conv */
+		FREQ_1000,
+		true, /* enable alarm interrupts, disable square wave */
+		false, /* disable alarm 1 */
+		false /* disable alarm 1 */
+	};
+	err = ds3231_set_ctrl(dev, &ctrl);
 
-	/* Disable squarewave output */
-	err = i2c_reg_write_byte_dt(&config->i2c_bus, DS3231_REG_CTRL, 0x00);
-	if (err < 0) {
-		LOG_ERR("Error: disabling SQW: %d\n", err);
-	}
-
-	/* Make clock halt = 0 */
-	err = i2c_reg_write_byte_dt(&config->i2c_bus, DS3231_REG_TIME_SECONDS, 0x00);
-	if (err < 0) {
-		LOG_ERR("Error: Set clock halt bit:%d\n", err);
-	}
-
-	return 0;
+	return err;
 }
 
 #define DS3231_DEFINE(inst)                                                                        \
 	static struct ds3231_data ds3231_data_##inst;                                              \
-	static const struct ds3231_config ds3231_config_##inst = {                                 \
+	static const struct ds3231_drv_conf ds3231_drv_conf_##inst = {                                 \
 		.i2c_bus = I2C_DT_SPEC_INST_GET(inst),                                             \
 	};                                                                                         \
 	DEVICE_DT_INST_DEFINE(inst, &ds3231_init, NULL, &ds3231_data_##inst,                       \
-			      &ds3231_config_##inst, POST_KERNEL, CONFIG_RTC_INIT_PRIORITY,        \
+			      &ds3231_drv_conf_##inst, POST_KERNEL, CONFIG_RTC_INIT_PRIORITY,        \
 			      &ds3231_driver_api);
 
 DT_INST_FOREACH_STATUS_OKAY(DS3231_DEFINE)
