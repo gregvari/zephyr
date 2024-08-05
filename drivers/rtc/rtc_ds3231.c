@@ -1,11 +1,10 @@
 /*
  * SPDX-License-Identifier: Apache-2.0
  * 
- * Copyright (c) 2023 Arunmani Alagarsamy <arunmani27100@gmail.com>
  * Copyright (c) 2024 Gergo Vari <work@varigergo.hu>
  */
 
-/* TODO: implement abstracted settings */
+/* TODO: implement alarm toggling in settings */
 /* TODO: implement configurable settings */
 /* TODO: implement get_temp */
 /* TODO: implement 24h/ampm modes */
@@ -158,6 +157,48 @@ static int ds3231_set_ctrl_sts(const struct device *dev, const struct ds3231_ctr
 	return err;
 }
 
+struct ds3231_alarm {
+	int id;
+	struct rtc_time *tm;
+};
+struct ds3231_settings {
+	bool osc;
+	bool intctrl_or_sqw;
+	enum freq freq_sqw;
+	bool freq_32khz;
+	struct ds3231_alarm alarms[2];
+};
+static int ds3231_set_settings(const struct device *dev, const struct ds3231_settings *conf) {
+	const struct ds3231_ctrl ctrl = {
+		conf->osc,	
+		false, 
+		conf->freq_sqw,
+		conf->intctrl_or_sqw, 
+		false,
+		false 
+	};
+
+	const struct ds3231_ctrl_sts ctrl_sts = {
+		false, 
+		conf->freq_32khz, 
+		false, 
+		false, 
+		false
+	};
+
+	int err = ds3231_set_ctrl(dev, &ctrl);
+	if (err != 0) {
+		LOG_ERR("Couldn't set control register.");
+		return -EIO;
+	}
+	err = ds3231_set_ctrl_sts(dev, &ctrl_sts);
+	if (err != 0) {
+		LOG_ERR("Couldn't set status register.");
+		return -EIO;
+	}
+	return 0;
+}
+
 static int ds3231_set_time(const struct device *dev, const struct rtc_time *tm)
 {
 	LOG_DBG("set time: year = %d, mon = %d, mday = %d, wday = %d, hour = %d, "
@@ -243,33 +284,15 @@ static int ds3231_init(const struct device *dev)
 		return -ENODEV;
 	}
 	
-	const struct ds3231_ctrl ctrl = {
-		true,	
-		false, 
+	const struct ds3231_settings conf = {
+		true,
+		true,
 		FREQ_1000,
-		true, 
-		false, 
-		false 
+		false,
+		{}
 	};
-	int err = ds3231_set_ctrl(dev, &ctrl);
-	if (err != 0) {
-		LOG_ERR("Couldn't set control register.");
-		return -EIO;
-	}
-
-	const struct ds3231_ctrl_sts ctrl_sts = {
-		false, 
-		false, 
-		false, 
-		false, 
-		false
-	};
-	err = ds3231_set_ctrl_sts(dev, &ctrl_sts);
-	if (err != 0) {
-		LOG_ERR("Couldn't set status register.");
-		return -EIO;
-	}
-
+	int err = ds3231_set_settings(dev, &conf);
+	
 	return err;
 }
 
