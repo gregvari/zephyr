@@ -32,8 +32,8 @@
 #define DS3231_REG_ALARM_2_DATE    0x0D
 
 /* Control registers */
-#define DS3231_REG_CTRL         0x0E
-#define DS3231_REG_CTRL_STATUS  0x0F
+#define DS3231_REG_CTRL     0x0E
+#define DS3231_REG_CTRL_STS 0x0F
 
 /* Aging offset register */
 #define DS3231_REG_AGING_OFFSET 0x10
@@ -97,11 +97,11 @@
 
 /* Control status bitmasks */
 /* For some reason you can access OSF in both control and control status registers. */
-#define DS3231_BITS_CTRL_STS_OSF          BIT(7) /* oscillator stop flag */
+#define DS3231_BITS_CTRL_STS_OSF          BIT(7) /* oscillator stop flag */ /* read only */
 #define DS3231_BITS_CTRL_STS_32_EN        BIT(3) /* 32kHz square-wave */
-#define DS3231_BITS_CTRL_STS_BSY          BIT(2) /* set when TXCO is busy, see CONV flag */
-#define DS3231_BITS_CTRL_STS_ALARM_2_FLAG BIT(1)
-#define DS3231_BITS_CTRL_STS_ALARM_1_FLAG BIT(0)
+#define DS3231_BITS_CTRL_STS_BSY          BIT(2) /* set when TXCO is busy, see CONV flag */ /* read only */
+#define DS3231_BITS_CTRL_STS_ALARM_2_FLAG BIT(1) /* can only be set to 0 */
+#define DS3231_BITS_CTRL_STS_ALARM_1_FLAG BIT(0) /* can only be set to 0 */
 
 /* Aging offset bitmask */
 #define DS3231_BITS_DATA BIT(6, 0)

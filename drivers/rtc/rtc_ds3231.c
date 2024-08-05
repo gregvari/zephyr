@@ -5,7 +5,6 @@
  * Copyright (c) 2024 Gergo Vari <work@varigergo.hu>
  */
 
-/* TODO: implement control status */
 /* TODO: implement abstracted settings */
 /* TODO: implement configurable settings */
 /* TODO: implement get_temp */
@@ -114,12 +113,48 @@ static int ds3231_ctrl_to_buf(const struct ds3231_ctrl *ctrl, uint8_t *buf) {
 	return 0;
 }
 static int ds3231_set_ctrl(const struct device *dev, const struct ds3231_ctrl *ctrl) {
-	uint8_t buf;
+	uint8_t buf = 0;
 	int err = ds3231_ctrl_to_buf(ctrl, &buf);
 	if (err != 0) {
 		return err;
 	}
 	err = i2c_set_registers(dev, DS3231_REG_CTRL, &buf, 1);
+	return err;
+}
+
+struct ds3231_ctrl_sts {
+	bool osf;
+	bool en_32khz;
+	bool bsy;
+	bool a1f;
+	bool a2f;
+};
+static int ds3231_ctrl_sts_to_buf(const struct ds3231_ctrl_sts *ctrl, uint8_t *buf) {
+	if (ctrl->a1f) {
+		*buf |= DS3231_BITS_CTRL_STS_ALARM_1_FLAG;
+	}
+	if (ctrl->a2f) {
+		*buf |= DS3231_BITS_CTRL_STS_ALARM_2_FLAG;
+	}
+	if (ctrl->osf) {
+		*buf |= DS3231_BITS_CTRL_STS_OSF;
+	}
+	if (ctrl->en_32khz) {
+		*buf |= DS3231_BITS_CTRL_STS_32_EN;
+	}
+	if (ctrl->bsy) {
+		*buf |= DS3231_BITS_CTRL_STS_BSY;
+	}
+	return 0;
+}
+static int ds3231_set_ctrl_sts(const struct device *dev, const struct ds3231_ctrl_sts *conf) {
+	uint8_t buf = 0;
+	int err = ds3231_ctrl_sts_to_buf(conf, &buf);
+	printf("%d\n", buf);
+	if (err != 0) {
+		return err;
+	}
+	err = i2c_set_registers(dev, DS3231_REG_CTRL_STS, &buf, 1);
 	return err;
 }
 
@@ -202,7 +237,6 @@ static const struct rtc_driver_api ds3231_driver_api = {
 
 static int ds3231_init(const struct device *dev)
 {
-	int err;
 	const struct ds3231_drv_conf *config = dev->config;
 	if (!i2c_is_ready_dt(&config->i2c_bus)) {
 		LOG_ERR("I2C bus not ready.");
@@ -210,14 +244,31 @@ static int ds3231_init(const struct device *dev)
 	}
 	
 	const struct ds3231_ctrl ctrl = {
-		true, /* enable oscillator */
-		false, /* disable conv */
+		true,	
+		false, 
 		FREQ_1000,
-		true, /* enable alarm interrupts, disable square wave */
-		false, /* disable alarm 1 */
-		false /* disable alarm 1 */
+		true, 
+		false, 
+		false 
 	};
-	err = ds3231_set_ctrl(dev, &ctrl);
+	int err = ds3231_set_ctrl(dev, &ctrl);
+	if (err != 0) {
+		LOG_ERR("Couldn't set control register.");
+		return -EIO;
+	}
+
+	const struct ds3231_ctrl_sts ctrl_sts = {
+		false, 
+		false, 
+		false, 
+		false, 
+		false
+	};
+	err = ds3231_set_ctrl_sts(dev, &ctrl_sts);
+	if (err != 0) {
+		LOG_ERR("Couldn't set status register.");
+		return -EIO;
+	}
 
 	return err;
 }
