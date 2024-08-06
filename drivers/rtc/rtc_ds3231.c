@@ -4,7 +4,8 @@
  * Copyright (c) 2024 Gergo Vari <work@varigergo.hu>
  */
 
-/* TODO: implement alarm toggling in settings */
+/* TODO: implement modifying settings */
+/* TODO: implement alarm */
 /* TODO: implement configurable settings */
 /* TODO: implement get_temp */
 /* TODO: implement 24h/ampm modes */
@@ -157,16 +158,13 @@ static int ds3231_set_ctrl_sts(const struct device *dev, const struct ds3231_ctr
 	return err;
 }
 
-struct ds3231_alarm {
-	int id;
-	struct rtc_time *tm;
-};
 struct ds3231_settings {
 	bool osc;
 	bool intctrl_or_sqw;
 	enum freq freq_sqw;
 	bool freq_32khz;
-	struct ds3231_alarm alarms[2];
+	bool alarm_1;
+	bool alarm_2;
 };
 static int ds3231_set_settings(const struct device *dev, const struct ds3231_settings *conf) {
 	const struct ds3231_ctrl ctrl = {
@@ -174,8 +172,8 @@ static int ds3231_set_settings(const struct device *dev, const struct ds3231_set
 		false, 
 		conf->freq_sqw,
 		conf->intctrl_or_sqw, 
-		false,
-		false 
+		alarm_1,
+		alarm_2 
 	};
 
 	const struct ds3231_ctrl_sts ctrl_sts = {
