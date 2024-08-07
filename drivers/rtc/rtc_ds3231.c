@@ -4,7 +4,6 @@
  * Copyright (c) 2024 Gergo Vari <work@varigergo.hu>
  */
 
-/* TODO: implement modifying settings */
 /* TODO: implement alarm */
 /* TODO: implement configurable settings */
 /* TODO: implement get_temp */
@@ -30,37 +29,54 @@ LOG_MODULE_REGISTER(ds3231, CONFIG_RTC_LOG_LEVEL);
 struct ds3231_drv_conf {
 	struct i2c_dt_spec i2c_bus;
 };
-
 struct ds3231_data {
 	struct k_spinlock lock;
 };
 
-static int i2c_set_registers(const struct device *dev, uint8_t start_reg, const uint8_t *buf, const size_t buf_size) {
-	int err;
+static int i2c_set_registers(const struct device *dev, uint8_t start_reg, const uint8_t *buf, const size_t buf_size) 
+{
 	struct ds3231_data *data = dev->data;
 	const struct ds3231_drv_conf *config = dev->config;
 
 	k_spinlock_key_t key = k_spin_lock(&data->lock);
 
-	err = i2c_burst_write_dt(&config->i2c_bus, start_reg, buf, buf_size);
+	int err = i2c_burst_write_dt(&config->i2c_bus, start_reg, buf, buf_size);
 
 	k_spin_unlock(&data->lock, key);
 	return err;
 }
-
-static int i2c_get_registers(const struct device *dev, uint8_t start_reg, uint8_t *buf, const size_t buf_size) {
-	int err;
+static int i2c_get_registers(const struct device *dev, uint8_t start_reg, uint8_t *buf, const size_t buf_size) 
+{
 	struct ds3231_data *data = dev->data;
 	const struct ds3231_drv_conf *config = dev->config;
 
 	k_spinlock_key_t key = k_spin_lock(&data->lock);
 
-	err = i2c_burst_read_dt(&config->i2c_bus, start_reg, buf, buf_size);
+	int err = i2c_burst_read_dt(&config->i2c_bus, start_reg, buf, buf_size);
 
 	k_spin_unlock(&data->lock, key);
 	return err;
 }
-
+static int i2c_modify_register(const struct device *dev, uint8_t reg, uint8_t *buf, const uint8_t bitmask) 
+{
+	int err;
+	if (bitmask != 255) {
+		uint8_t og_buf = 0;
+		err = i2c_get_registers(dev, reg, &og_buf, 1);
+		if (err != 0) {
+			return err;
+		}
+		og_buf &= ~bitmask;
+		*buf &= bitmask;
+		og_buf |= *buf;
+		*buf = og_buf;
+	}
+	if (err != 0) {
+		return err;
+	}
+	err = i2c_set_registers(dev, reg, buf, 1);
+	return err;
+}
 
 enum freq {FREQ_1000, FREQ_1024, FREQ_4096, FREQ_8192};
 struct ds3231_ctrl {
@@ -74,7 +90,8 @@ struct ds3231_ctrl {
 	bool en_alarm_1;
 	bool en_alarm_2;
 };
-static int ds3231_ctrl_to_buf(const struct ds3231_ctrl *ctrl, uint8_t *buf) {
+static int ds3231_ctrl_to_buf(const struct ds3231_ctrl *ctrl, uint8_t *buf) 
+{
 	if (ctrl->en_alarm_1) {
 		*buf |= DS3231_BITS_CTRL_ALARM_1_EN;
 	}
@@ -112,15 +129,22 @@ static int ds3231_ctrl_to_buf(const struct ds3231_ctrl *ctrl, uint8_t *buf) {
 	}
 	return 0;
 }
-static int ds3231_set_ctrl(const struct device *dev, const struct ds3231_ctrl *ctrl) {
+static int ds3231_modify_ctrl(const struct device *dev, const struct ds3231_ctrl *ctrl, const uint8_t bitmask) 
+{
+	uint8_t reg = DS3231_REG_CTRL;
 	uint8_t buf = 0;
+
 	int err = ds3231_ctrl_to_buf(ctrl, &buf);
 	if (err != 0) {
 		return err;
 	}
-	err = i2c_set_registers(dev, DS3231_REG_CTRL, &buf, 1);
-	return err;
+
+	return i2c_modify_register(dev, reg, &buf, bitmask);
 }
+static int ds3231_set_ctrl(const struct device *dev, const struct ds3231_ctrl *ctrl) 
+{
+	return ds3231_modify_ctrl(dev, ctrl, 255);
+} 
 
 struct ds3231_ctrl_sts {
 	bool osf;
@@ -129,7 +153,8 @@ struct ds3231_ctrl_sts {
 	bool a1f;
 	bool a2f;
 };
-static int ds3231_ctrl_sts_to_buf(const struct ds3231_ctrl_sts *ctrl, uint8_t *buf) {
+static int ds3231_ctrl_sts_to_buf(const struct ds3231_ctrl_sts *ctrl, uint8_t *buf) 
+{
 	if (ctrl->a1f) {
 		*buf |= DS3231_BITS_CTRL_STS_ALARM_1_FLAG;
 	}
@@ -147,16 +172,22 @@ static int ds3231_ctrl_sts_to_buf(const struct ds3231_ctrl_sts *ctrl, uint8_t *b
 	}
 	return 0;
 }
-static int ds3231_set_ctrl_sts(const struct device *dev, const struct ds3231_ctrl_sts *conf) {
+static int ds3231_modify_ctrl_sts(const struct device *dev, const struct ds3231_ctrl_sts *ctrl, const uint8_t bitmask) 
+{
+	const uint8_t reg = DS3231_REG_CTRL_STS;
 	uint8_t buf = 0;
-	int err = ds3231_ctrl_sts_to_buf(conf, &buf);
-	printf("%d\n", buf);
+
+	int err = ds3231_ctrl_sts_to_buf(ctrl, &buf);
 	if (err != 0) {
 		return err;
 	}
-	err = i2c_set_registers(dev, DS3231_REG_CTRL_STS, &buf, 1);
-	return err;
+
+	return i2c_modify_register(dev, reg, &buf, bitmask);
 }
+static int ds3231_set_ctrl_sts(const struct device *dev, const struct ds3231_ctrl_sts *ctrl) 
+{
+	return ds3231_modify_ctrl_sts(dev, ctrl, 255);
+} 
 
 struct ds3231_settings {
 	bool osc;
@@ -166,14 +197,15 @@ struct ds3231_settings {
 	bool alarm_1;
 	bool alarm_2;
 };
-static int ds3231_set_settings(const struct device *dev, const struct ds3231_settings *conf) {
+static int ds3231_set_settings(const struct device *dev, const struct ds3231_settings *conf) 
+{
 	const struct ds3231_ctrl ctrl = {
 		conf->osc,	
 		false, 
 		conf->freq_sqw,
 		conf->intctrl_or_sqw, 
-		alarm_1,
-		alarm_2 
+		conf->alarm_1,
+		conf->alarm_2 
 	};
 
 	const struct ds3231_ctrl_sts ctrl_sts = {
@@ -282,12 +314,14 @@ static int ds3231_init(const struct device *dev)
 		return -ENODEV;
 	}
 	
+	/* the comments below specify the settings we default to */
 	const struct ds3231_settings conf = {
-		true,
-		true,
-		FREQ_1000,
-		false,
-		{}
+		true, /* enable oscillator */
+		true, /* enable interrupt control (instead of sqw) */
+		FREQ_1000, /* set sqw freq to 1000 */
+		false, /* disable 32khz freq */
+		false, /* disable alarm 1 */
+		false /* disable alarm 2 */
 	};
 	int err = ds3231_set_settings(dev, &conf);
 	
