@@ -284,13 +284,33 @@ static int ds3231_get_time(const struct device *dev, struct rtc_time *timeptr)
 	return 0;
 }
 
+static int ds3231_alarm_get_supported_fields(const struct device *dev, uint16_t id, uint16_t *mask)
+{
+	*mask |= RTC_ALARM_TIME_MASK_YEAR;
+	*mask |= RTC_ALARM_TIME_MASK_MONTH;
+	*mask |= RTC_ALARM_TIME_MASK_MONTHDAY;
+	*mask |= RTC_ALARM_TIME_MASK_WEEKDAY;
+	*mask |= RTC_ALARM_TIME_MASK_HOUR;
+	*mask |= RTC_ALARM_TIME_MASK_MINUTE;
+	switch (id) {
+		case 0:
+			*mask |= RTC_ALARM_TIME_MASK_SECOND;
+			break;
+		case 1:
+			break;
+		default:
+			return -EINVAL;
+	}
+	return 0;
+}
+
 static const struct rtc_driver_api ds3231_driver_api = {
 	.set_time = ds3231_set_time,
 	.get_time = ds3231_get_time,
 
 #ifdef CONFIG_RTC_ALARM
-	/*.alarm_get_supported_fields = ds3231_alarm_get_supported_fields,
-	.alarm_set_time = ds3231_alarm_set_time,
+	.alarm_get_supported_fields = ds3231_alarm_get_supported_fields,
+	/*.alarm_set_time = ds3231_alarm_set_time,
 	.alarm_get_time = ds3231_alarm_get_time,
 	.alarm_is_pending = ds3231_alarm_is_pending,
 	.alarm_set_callback = ds3231_alarm_set_callback,*/
