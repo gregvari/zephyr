@@ -5,6 +5,7 @@
  */
 
 /* TODO: implement alarm */
+/* TODO: implement modifiable settings */
 /* TODO: implement configurable settings */
 /* TODO: implement get_temp */
 /* TODO: implement 24h/ampm modes */
@@ -229,32 +230,103 @@ static int ds3231_set_settings(const struct device *dev, const struct ds3231_set
 	return 0;
 }
 
-static int ds3231_set_time(const struct device *dev, const struct rtc_time *tm)
+static int rtc_time_to_alarm_buf(const struct rtc_time *tm, int id, const uint8_t mask, uint8_t *buf)
 {
-	LOG_DBG("set time: year = %d, mon = %d, mday = %d, wday = %d, hour = %d, "
-		"min = %d, sec = %d",
-		tm->tm_year, tm->tm_mon, tm->tm_mday, tm->tm_wday, tm->tm_hour, tm->tm_min,
-		tm->tm_sec);
+	if (((mask & RTC_ALARM_TIME_MASK_WEEKDAY) && (mask & RTC_ALARM_TIME_MASK_MONTHDAY)) || (id < 0 || id >= 2)) {
+		return -EINVAL;
+	}
 
-	const size_t buf_size = 7;
+	if (mask & RTC_ALARM_TIME_MASK_MINUTE) {
+		buf[1] = bin2bcd(tm->tm_min) & DS3231_BITS_TIME_MINUTES;
+		buf[1] |= DS3231_BITS_ALARM_RATE;
+	}
+
+	if (mask & RTC_ALARM_TIME_MASK_HOUR) {
+		buf[2] = bin2bcd(tm->tm_hour) & DS3231_BITS_TIME_HOURS;
+		buf[2] |= DS3231_BITS_ALARM_RATE;
+	}
+	
+	if (mask & RTC_ALARM_TIME_MASK_WEEKDAY) {
+		buf[3] = bin2bcd(tm->tm_wday) & DS3231_BITS_TIME_DAY_OF_WEEK;
+		buf[3] |= DS3231_BITS_ALARM_DATE_W_OR_M;
+		buf[3] |= DS3231_BITS_ALARM_RATE;
+	} else if (mask & RTC_ALARM_TIME_MASK_WEEKDAY) {
+		buf[3] = bin2bcd(tm->tm_mday) & DS3231_BITS_TIME_DATE;
+		buf[3] |= DS3231_BITS_ALARM_RATE;
+	}
+
+	switch (id) {
+		case 0:
+			buf[0] = bin2bcd(tm->tm_sec) & DS3231_BITS_TIME_SECONDS;
+			break;
+		case 1:
+			/* shift the array to the left */
+			for (int i = 2; i > 0; i--) {
+				buf[i - 1] = buf[i];
+			}
+			break;
+		default:
+			return -EINVAL;
+	}
+
+	return 0;
+}
+static int modify_alarm_time(const struct device *dev, int id, const struct rtc_time *tm, const uint8_t mask)
+{
+	uint8_t start_reg;
+	size_t buf_size;
+
+	switch (id) {
+		case 0:
+			start_reg = DS3231_REG_ALARM_1_SECONDS;
+			buf_size = 4;
+			break;
+		case 1:
+			start_reg = DS3231_REG_ALARM_2_MINUTES;
+			buf_size = 3;
+			break;
+		default:
+			return -EINVAL;
+	}
+	
 	uint8_t buf[buf_size];
+	int err = rtc_time_to_alarm_buf(tm, id, mask, buf);
+	if (err != 0) {
+		return err;
+	}
+
+	return i2c_set_registers(dev, start_reg, buf, buf_size);
+}
+
+static int rtc_time_to_buf(const struct rtc_time *tm, uint8_t *buf)
+{
 	buf[0] = bin2bcd(tm->tm_sec)  & DS3231_BITS_TIME_SECONDS;
 	buf[1] = bin2bcd(tm->tm_min)  & DS3231_BITS_TIME_MINUTES;
 	buf[2] = bin2bcd(tm->tm_hour) & DS3231_BITS_TIME_HOURS;
 	buf[3] = bin2bcd(tm->tm_wday) & DS3231_BITS_TIME_DAY_OF_WEEK;
 	buf[4] = bin2bcd(tm->tm_mday) & DS3231_BITS_TIME_DATE;
 	buf[5] = bin2bcd(tm->tm_mon)  & DS3231_BITS_TIME_MONTH;
-	
+
 	/* here modulo 100 returns the last two digits of the year,
-	 * as the DS3231 chip can only store year data for 0-99,
-	 * hitting that ceiling can be detected with the century bit. */
+	   as the DS3231 chip can only store year data for 0-99,
+	   hitting that ceiling can be detected with the century bit. */
 	/* TODO: figure out a way to store the WHOLE year, not just the last 2 digits */
 	buf[6] = bin2bcd((tm->tm_year % 100)) & DS3231_BITS_TIME_YEAR; 
-
+	return 0;
+}
+static int set_time(const struct device *dev, const struct rtc_time *tm)
+{	
+	int buf_size = 7;
+	uint8_t buf[buf_size];
+	int err = rtc_time_to_buf(tm, buf);
+	if (err != 0) {
+		return err;
+	}
+	
 	return i2c_set_registers(dev, DS3231_REG_TIME_SECONDS, buf, buf_size);
 }
 
-static int ds3231_get_time(const struct device *dev, struct rtc_time *timeptr)
+static int get_time(const struct device *dev, struct rtc_time *timeptr)
 {
 	const size_t buf_size = 7;
 	uint8_t buf[buf_size];
@@ -276,15 +348,10 @@ static int ds3231_get_time(const struct device *dev, struct rtc_time *timeptr)
 	timeptr->tm_isdst = -1;
 	timeptr->tm_yday = -1;
 
-	LOG_DBG("get time: year = %d, mon = %d, mday = %d, wday = %d, hour = %d, "
-		"min = %d, sec = %d",
-		timeptr->tm_year, timeptr->tm_mon, timeptr->tm_mday, timeptr->tm_wday,
-		timeptr->tm_hour, timeptr->tm_min, timeptr->tm_sec);
-
 	return 0;
 }
 
-static int ds3231_alarm_get_supported_fields(const struct device *dev, uint16_t id, uint16_t *mask)
+static int alarm_get_supported_fields(const struct device *dev, uint16_t id, uint16_t *mask)
 {
 	*mask |= RTC_ALARM_TIME_MASK_YEAR;
 	*mask |= RTC_ALARM_TIME_MASK_MONTH;
@@ -304,25 +371,60 @@ static int ds3231_alarm_get_supported_fields(const struct device *dev, uint16_t 
 	return 0;
 }
 
+static int modify_alarm_state(const struct device *dev, uint16_t id, bool state) 
+{
+	struct ds3231_ctrl ctrl;
+	uint8_t ctrl_mask = 0;
+	
+	switch (id) {
+		case 0:
+			ctrl.en_alarm_1 = state;
+			ctrl_mask |= DS3231_BITS_CTRL_ALARM_1_EN;
+			break;
+		case 1:
+			ctrl.en_alarm_2 = state;
+			ctrl_mask |= DS3231_BITS_CTRL_ALARM_2_EN;
+			break;
+		default:
+			return -EINVAL;
+	}
+	
+	/* TODO: move to modifiable settings when implemented */
+	return ds3231_modify_ctrl(dev, &ctrl, ctrl_mask);
+}
+static int alarm_set_time(const struct device *dev, uint16_t id, uint16_t mask, const struct rtc_time *timeptr)
+{
+	if (mask == 0) {
+		return modify_alarm_state(dev, id, false);	
+	}
+	
+	int err = modify_alarm_state(dev, id, true);
+	if (err != 0) {
+		return err;
+	}
+
+	return modify_alarm_time(dev, id, timeptr, mask);
+}
+
 static const struct rtc_driver_api ds3231_driver_api = {
-	.set_time = ds3231_set_time,
-	.get_time = ds3231_get_time,
+	.set_time = set_time,
+	.get_time = get_time,
 
 #ifdef CONFIG_RTC_ALARM
-	.alarm_get_supported_fields = ds3231_alarm_get_supported_fields,
-	/*.alarm_set_time = ds3231_alarm_set_time,
-	.alarm_get_time = ds3231_alarm_get_time,
-	.alarm_is_pending = ds3231_alarm_is_pending,
-	.alarm_set_callback = ds3231_alarm_set_callback,*/
+	.alarm_get_supported_fields = alarm_get_supported_fields,
+	.alarm_set_time = alarm_set_time,
+	/*.alarm_get_time = alarm_get_time,*/
+	/*.alarm_is_pending = alarm_is_pending,*/
+	/*.alarm_set_callback = alarm_set_callback,*/
 #endif /* CONFIG_RTC_ALARM */
 
 #ifdef CONFIG_RTC_UPDATE
-	/*.update_set_callback = ds3231_update_set_callback,*/
+	/*.update_set_callback = update_set_callback,*/
 #endif /* CONFIG_RTC_UPDATE */
 
 #ifdef CONFIG_RTC_CALIBRATION
-	/*.set_calibration = ds3231_set_calibration,
-	.get_calibration = ds3231_get_calibration,*/
+	/*.set_calibration = set_calibration,
+	.get_calibration = get_calibration,*/
 #endif /* CONFIG_RTC_CALIBRATION */
 };
 
@@ -335,14 +437,16 @@ static int ds3231_init(const struct device *dev)
 	}
 	
 	/* the comments below specify the settings we default to */
-	const struct ds3231_settings conf = {
-		true, /* enable oscillator */
-		true, /* enable interrupt control (instead of sqw) */
-		FREQ_1000, /* set sqw freq to 1000 */
-		false, /* disable 32khz freq */
-		false, /* disable alarm 1 */
-		false /* disable alarm 2 */
-	};
+	struct ds3231_settings conf;
+	conf.osc = true;
+	conf.intctrl_or_sqw = true;
+	conf.freq_sqw = FREQ_1000;
+	conf.freq_32khz = false;
+
+	/* TODO: don't turn off alarms, only modify settings and leave these alone */
+	conf.alarm_1 = false;
+	conf.alarm_2 = false;
+	
 	int err = ds3231_set_settings(dev, &conf);
 	
 	return err;
