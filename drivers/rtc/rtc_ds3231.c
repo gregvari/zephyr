@@ -237,11 +237,11 @@ static int ds3231_set_settings(const struct device *dev, const struct ds3231_set
 static int rtc_time_to_alarm_buf(const struct rtc_time *tm, int id, const uint16_t mask, uint8_t *buf)
 {
 	if ((mask & RTC_ALARM_TIME_MASK_WEEKDAY) && (mask & RTC_ALARM_TIME_MASK_MONTHDAY)) {
-		printf("rtc_time_to_alarm_buf: Mask is invalid (%d)!\n", mask);
+		LOG_ERR("rtc_time_to_alarm_buf: Mask is invalid (%d)!\n", mask);
 		return -EINVAL;
 	}
 	if (id < 0 || id >= 2) {
-		printf("rtc_time_to_alarm_buf: Alarm ID is out of range (%d)!\n", id);
+		LOG_ERR("rtc_time_to_alarm_buf: Alarm ID is out of range (%d)!\n", id);
 		return -EINVAL;
 	}
 
@@ -275,10 +275,12 @@ static int rtc_time_to_alarm_buf(const struct rtc_time *tm, int id, const uint16
 			if (mask & RTC_ALARM_TIME_MASK_SECOND) {
 				return -EINVAL;
 			}
+
 			/* shift the array to the left */
-			for (int i = 2; i > 0; i--) {
-				buf[i - 1] = buf[i];
+			for (int i = 0; i < 3; i++) {
+				buf[i] = buf[i + 1];
 			}
+
 			break;
 		default:
 			return -EINVAL;
@@ -389,9 +391,7 @@ static int get_time(const struct device *dev, struct rtc_time *timeptr)
 
 static int alarm_get_supported_fields(const struct device *dev, uint16_t id, uint16_t *mask)
 {
-	*mask = RTC_ALARM_TIME_MASK_YEAR 
-		| RTC_ALARM_TIME_MASK_MONTH
-		| RTC_ALARM_TIME_MASK_MONTHDAY
+	*mask = RTC_ALARM_TIME_MASK_MONTHDAY
 		| RTC_ALARM_TIME_MASK_WEEKDAY
 		| RTC_ALARM_TIME_MASK_HOUR
 		| RTC_ALARM_TIME_MASK_MINUTE;
@@ -444,7 +444,7 @@ static int alarm_set_time(const struct device *dev, uint16_t id, uint16_t mask, 
 	return modify_alarm_time(dev, id, timeptr, mask);
 }
 
-static int alarm_buf_to_rtc_time(const uint8_t *buf, int id, struct rtc_time *tm, uint16_t *mask)
+static int alarm_buf_to_rtc_time(uint8_t *buf, int id, struct rtc_time *tm, uint16_t *mask)
 {
 	int err = reset_rtc_time(tm);
 	if (err != 0) {
@@ -455,12 +455,10 @@ static int alarm_buf_to_rtc_time(const uint8_t *buf, int id, struct rtc_time *tm
 		return -EINVAL;
 	} else if (id == 1) {
 		/* shift to the right to match original func */
-		uint8_t temp_buf[4];
-		temp_buf[0] = 0;
-		temp_buf[1] = buf[0];
-		temp_buf[2] = buf[1];
-		temp_buf[3] = buf[2];
-		buf = temp_buf;
+		for (int i = 3; i > 0; i--) {
+			buf[i] = buf[i - 1];
+		}
+		buf[0] = 0;
 	}
 
 	*mask = 0;
@@ -494,8 +492,8 @@ static int alarm_buf_to_rtc_time(const uint8_t *buf, int id, struct rtc_time *tm
 }
 static int alarm_get_time(const struct device *dev, uint16_t id, uint16_t *mask, struct rtc_time *timeptr) 
 {
-	size_t buf_size;
 	uint8_t start_reg;
+	size_t buf_size;
 	/* TODO: remove code duplication */
 	switch (id) {
 		case 0:
@@ -510,7 +508,7 @@ static int alarm_get_time(const struct device *dev, uint16_t id, uint16_t *mask,
 			return -EINVAL;
 	}
 
-	uint8_t buf[buf_size];
+	uint8_t buf[4];
 	int err = i2c_get_registers(dev, start_reg, buf, buf_size);
 	if (err != 0) {
 		return err;
