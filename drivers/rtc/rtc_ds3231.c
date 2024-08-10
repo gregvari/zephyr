@@ -14,6 +14,10 @@
 /* TODO: decide if we need to deal with CONV */
 /* TODO: implement device power management */
 
+/** PROBLEMS **/
+/* FIXME: alarm 0 get_time zeroes date/wday, */
+/* FIXME: alarm 1 get_time zeroes everything */
+
 #include <zephyr/drivers/rtc/rtc_ds3231.h>
 
 #include <zephyr/drivers/rtc.h>
@@ -230,9 +234,14 @@ static int ds3231_set_settings(const struct device *dev, const struct ds3231_set
 	return 0;
 }
 
-static int rtc_time_to_alarm_buf(const struct rtc_time *tm, int id, const uint8_t mask, uint8_t *buf)
+static int rtc_time_to_alarm_buf(const struct rtc_time *tm, int id, const uint16_t mask, uint8_t *buf)
 {
-	if (((mask & RTC_ALARM_TIME_MASK_WEEKDAY) && (mask & RTC_ALARM_TIME_MASK_MONTHDAY)) || (id < 0 || id >= 2)) {
+	if ((mask & RTC_ALARM_TIME_MASK_WEEKDAY) && (mask & RTC_ALARM_TIME_MASK_MONTHDAY)) {
+		printf("rtc_time_to_alarm_buf: Mask is invalid (%d)!\n", mask);
+		return -EINVAL;
+	}
+	if (id < 0 || id >= 2) {
+		printf("rtc_time_to_alarm_buf: Alarm ID is out of range (%d)!\n", id);
 		return -EINVAL;
 	}
 
@@ -250,16 +259,22 @@ static int rtc_time_to_alarm_buf(const struct rtc_time *tm, int id, const uint8_
 		buf[3] = bin2bcd(tm->tm_wday) & DS3231_BITS_TIME_DAY_OF_WEEK;
 		buf[3] |= DS3231_BITS_ALARM_DATE_W_OR_M;
 		buf[3] |= DS3231_BITS_ALARM_RATE;
-	} else if (mask & RTC_ALARM_TIME_MASK_WEEKDAY) {
+	} else if (mask & RTC_ALARM_TIME_MASK_MONTHDAY) {
 		buf[3] = bin2bcd(tm->tm_mday) & DS3231_BITS_TIME_DATE;
 		buf[3] |= DS3231_BITS_ALARM_RATE;
 	}
 
 	switch (id) {
 		case 0:
-			buf[0] = bin2bcd(tm->tm_sec) & DS3231_BITS_TIME_SECONDS;
+			if (mask & RTC_ALARM_TIME_MASK_SECOND) {
+				buf[0] = bin2bcd(tm->tm_sec) & DS3231_BITS_TIME_SECONDS;
+				buf[0] |= DS3231_BITS_ALARM_RATE;
+			}
 			break;
 		case 1:
+			if (mask & RTC_ALARM_TIME_MASK_SECOND) {
+				return -EINVAL;
+			}
 			/* shift the array to the left */
 			for (int i = 2; i > 0; i--) {
 				buf[i - 1] = buf[i];
@@ -326,13 +341,25 @@ static int set_time(const struct device *dev, const struct rtc_time *tm)
 	return i2c_set_registers(dev, DS3231_REG_TIME_SECONDS, buf, buf_size);
 }
 
-static int get_time(const struct device *dev, struct rtc_time *timeptr)
+static int reset_rtc_time(struct rtc_time *tm) 
 {
-	const size_t buf_size = 7;
-	uint8_t buf[buf_size];
-	int err = i2c_get_registers(dev, DS3231_REG_TIME_SECONDS, buf, buf_size);
+	tm->tm_sec = 0;
+	tm->tm_min = 0;
+	tm->tm_hour= 0;
+	tm->tm_wday = 0;
+	tm->tm_mday = 0;
+	tm->tm_mon = 0;
+	tm->tm_year = 0;
+	tm->tm_nsec = 0;
+	tm->tm_isdst = -1;
+	tm->tm_yday = -1;
+	return 0;
+}
+static int buf_to_rtc_time(const uint8_t *buf, struct rtc_time *timeptr)
+{
+	int err = reset_rtc_time(timeptr);
 	if (err != 0) {
-		return err;
+		return -EINVAL;
 	}
 
 	timeptr->tm_sec = bcd2bin(buf[0] & DS3231_BITS_TIME_SECONDS);
@@ -342,23 +369,33 @@ static int get_time(const struct device *dev, struct rtc_time *timeptr)
 	timeptr->tm_mday = bcd2bin(buf[4] & DS3231_BITS_TIME_DATE);
 	timeptr->tm_mon = bcd2bin(buf[5] & DS3231_BITS_TIME_MONTH);
 	timeptr->tm_year = bcd2bin(buf[6] & DS3231_BITS_TIME_YEAR);
-	timeptr->tm_year = timeptr->tm_year + 100; /* FIXME: we will always just set us to 20xx for year */
-	
-	timeptr->tm_nsec = 0;
-	timeptr->tm_isdst = -1;
-	timeptr->tm_yday = -1;
 
+	/* FIXME: we will always just set us to 20xx for year */
+	timeptr->tm_year = timeptr->tm_year + 100; 
+	
 	return 0;
+}
+static int get_time(const struct device *dev, struct rtc_time *timeptr)
+{
+	const size_t buf_size = 7;
+	uint8_t buf[buf_size];
+	int err = i2c_get_registers(dev, DS3231_REG_TIME_SECONDS, buf, buf_size);
+	if (err != 0) {
+		return err;
+	}
+	
+	return buf_to_rtc_time(buf, timeptr);
 }
 
 static int alarm_get_supported_fields(const struct device *dev, uint16_t id, uint16_t *mask)
 {
-	*mask |= RTC_ALARM_TIME_MASK_YEAR;
-	*mask |= RTC_ALARM_TIME_MASK_MONTH;
-	*mask |= RTC_ALARM_TIME_MASK_MONTHDAY;
-	*mask |= RTC_ALARM_TIME_MASK_WEEKDAY;
-	*mask |= RTC_ALARM_TIME_MASK_HOUR;
-	*mask |= RTC_ALARM_TIME_MASK_MINUTE;
+	*mask = RTC_ALARM_TIME_MASK_YEAR 
+		| RTC_ALARM_TIME_MASK_MONTH
+		| RTC_ALARM_TIME_MASK_MONTHDAY
+		| RTC_ALARM_TIME_MASK_WEEKDAY
+		| RTC_ALARM_TIME_MASK_HOUR
+		| RTC_ALARM_TIME_MASK_MINUTE;
+
 	switch (id) {
 		case 0:
 			*mask |= RTC_ALARM_TIME_MASK_SECOND;
@@ -368,6 +405,7 @@ static int alarm_get_supported_fields(const struct device *dev, uint16_t id, uin
 		default:
 			return -EINVAL;
 	}
+
 	return 0;
 }
 
@@ -402,8 +440,83 @@ static int alarm_set_time(const struct device *dev, uint16_t id, uint16_t mask, 
 	if (err != 0) {
 		return err;
 	}
-
+	
 	return modify_alarm_time(dev, id, timeptr, mask);
+}
+
+static int alarm_buf_to_rtc_time(const uint8_t *buf, int id, struct rtc_time *tm, uint16_t *mask)
+{
+	int err = reset_rtc_time(tm);
+	if (err != 0) {
+		return -EINVAL;
+	}
+
+	if (id < 0 || id > 1) {
+		return -EINVAL;
+	} else if (id == 1) {
+		/* shift to the right to match original func */
+		uint8_t temp_buf[4];
+		temp_buf[0] = 0;
+		temp_buf[1] = buf[0];
+		temp_buf[2] = buf[1];
+		temp_buf[3] = buf[2];
+		buf = temp_buf;
+	}
+
+	*mask = 0;
+	if (buf[1] & DS3231_BITS_ALARM_RATE) {
+		tm->tm_min = bcd2bin(buf[1] & DS3231_BITS_TIME_MINUTES);
+		*mask |= RTC_ALARM_TIME_MASK_MINUTE;
+	}
+	if (buf[2] & DS3231_BITS_ALARM_RATE) {
+		tm->tm_hour = bcd2bin(buf[2] & DS3231_BITS_TIME_HOURS);
+		*mask |= RTC_ALARM_TIME_MASK_HOUR;
+	}
+	if (buf[3] & DS3231_BITS_ALARM_RATE) {
+		if (buf[3] & DS3231_BITS_ALARM_DATE_W_OR_M) {
+			tm->tm_wday = bcd2bin(buf[3] & DS3231_BITS_TIME_DAY_OF_WEEK);
+			*mask |= RTC_ALARM_TIME_MASK_WEEKDAY;
+		} else {
+			tm->tm_mday = bcd2bin(buf[3] & DS3231_BITS_TIME_DATE);
+			*mask |= RTC_ALARM_TIME_MASK_MONTHDAY;
+		}
+	}
+	if (buf[0] & DS3231_BITS_ALARM_RATE) {
+		tm->tm_sec = bcd2bin(buf[0] & DS3231_BITS_TIME_SECONDS);
+		*mask |= RTC_ALARM_TIME_MASK_SECOND;
+	}
+
+	if ((*mask & RTC_ALARM_TIME_MASK_WEEKDAY) && (*mask & RTC_ALARM_TIME_MASK_MONTHDAY)) {
+		return -EINVAL;
+	}
+
+	return 0;
+}
+static int alarm_get_time(const struct device *dev, uint16_t id, uint16_t *mask, struct rtc_time *timeptr) 
+{
+	size_t buf_size;
+	uint8_t start_reg;
+	/* TODO: remove code duplication */
+	switch (id) {
+		case 0:
+			start_reg = DS3231_REG_ALARM_1_SECONDS;
+			buf_size = 4;
+			break;
+		case 1:
+			start_reg = DS3231_REG_ALARM_2_MINUTES;
+			buf_size = 3;
+			break;
+		default:
+			return -EINVAL;
+	}
+
+	uint8_t buf[buf_size];
+	int err = i2c_get_registers(dev, start_reg, buf, buf_size);
+	if (err != 0) {
+		return err;
+	}
+	
+	return alarm_buf_to_rtc_time(buf, id, timeptr, mask);
 }
 
 static const struct rtc_driver_api ds3231_driver_api = {
@@ -413,7 +526,7 @@ static const struct rtc_driver_api ds3231_driver_api = {
 #ifdef CONFIG_RTC_ALARM
 	.alarm_get_supported_fields = alarm_get_supported_fields,
 	.alarm_set_time = alarm_set_time,
-	/*.alarm_get_time = alarm_get_time,*/
+	.alarm_get_time = alarm_get_time,
 	/*.alarm_is_pending = alarm_is_pending,*/
 	/*.alarm_set_callback = alarm_set_callback,*/
 #endif /* CONFIG_RTC_ALARM */
