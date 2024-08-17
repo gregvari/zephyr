@@ -82,7 +82,6 @@
 #define DS3231_BITS_CTRL_CONV BIT(6) 
 
 /* Rate selectors */
-/* TODO: the datasheet is probably wrong and it's not 1Hz but 1kHz, should check though */
 /* RS2 | RS1 | SQW FREQ
  *  0  |  0  | 1Hz
  *  0  |  1  | 1.024kHz

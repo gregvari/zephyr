@@ -14,7 +14,7 @@ include:
   - name: i2c-device.yaml
 
 properties:
-  32k-gpios:
+  freq-32khz-gpios:
     type: phandle-array
     description: |
 
