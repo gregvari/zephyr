@@ -33,7 +33,7 @@ struct alarm {
 	void *user_data;
 };
 
-struct ds3231_drv_data {
+struct drv_data {
 	struct alarm alarms[ALARM_COUNT];
 	struct k_sem lock;
 	struct gpio_callback isw_cb_data;
@@ -41,7 +41,7 @@ struct ds3231_drv_data {
 	const struct device *dev;
 };
 
-struct ds3231_drv_conf {
+struct drv_conf {
 	struct i2c_dt_spec i2c_bus;
 	struct gpio_dt_spec freq_32k_gpios;
 	struct gpio_dt_spec isw_gpios;
@@ -49,8 +49,8 @@ struct ds3231_drv_conf {
 
 static int i2c_set_registers(const struct device *dev, uint8_t start_reg, const uint8_t *buf, const size_t buf_size)
 {
-	struct ds3231_drv_data *data = dev->data;
-	const struct ds3231_drv_conf *config = dev->config;
+	struct drv_data *data = dev->data;
+	const struct drv_conf *config = dev->config;
 
 	(void)k_sem_take(&data->lock, K_FOREVER);
 	int err = i2c_burst_write_dt(&config->i2c_bus, start_reg, buf, buf_size);
@@ -60,8 +60,8 @@ static int i2c_set_registers(const struct device *dev, uint8_t start_reg, const 
 }
 static int i2c_get_registers(const struct device *dev, uint8_t start_reg, uint8_t *buf, const size_t buf_size)
 {
-	struct ds3231_drv_data *data = dev->data;
-	const struct ds3231_drv_conf *config = dev->config;
+	struct drv_data *data = dev->data;
+	const struct drv_conf *config = dev->config;
 
 	(void)k_sem_take(&data->lock, K_FOREVER);
 	int err = i2c_burst_read_dt(&config->i2c_bus, start_reg, buf, buf_size);
@@ -91,7 +91,7 @@ static int i2c_modify_register(const struct device *dev, uint8_t reg, uint8_t *b
 }
 
 enum freq {FREQ_1000, FREQ_1024, FREQ_4096, FREQ_8192};
-struct ds3231_ctrl {
+struct ctrl {
 	bool en_osc;
 
 	bool conv;
@@ -102,7 +102,7 @@ struct ds3231_ctrl {
 	bool en_alarm_1;
 	bool en_alarm_2;
 };
-static int ds3231_ctrl_to_buf(const struct ds3231_ctrl *ctrl, uint8_t *buf)
+static int ctrl_to_buf(const struct ctrl *ctrl, uint8_t *buf)
 {
 	if (ctrl->en_alarm_1) {
 		*buf |= DS3231_BITS_CTRL_ALARM_1_EN;
@@ -141,31 +141,31 @@ static int ds3231_ctrl_to_buf(const struct ds3231_ctrl *ctrl, uint8_t *buf)
 	}
 	return 0;
 }
-static int ds3231_modify_ctrl(const struct device *dev, const struct ds3231_ctrl *ctrl, const uint8_t bitmask)
+static int modify_ctrl(const struct device *dev, const struct ctrl *ctrl, const uint8_t bitmask)
 {
 	uint8_t reg = DS3231_REG_CTRL;
 	uint8_t buf = 0;
 
-	int err = ds3231_ctrl_to_buf(ctrl, &buf);
+	int err = ctrl_to_buf(ctrl, &buf);
 	if (err != 0) {
 		return err;
 	}
 
 	return i2c_modify_register(dev, reg, &buf, bitmask);
 }
-static int ds3231_set_ctrl(const struct device *dev, const struct ds3231_ctrl *ctrl)
+static int set_ctrl(const struct device *dev, const struct ctrl *ctrl)
 {
-	return ds3231_modify_ctrl(dev, ctrl, 255);
+	return modify_ctrl(dev, ctrl, 255);
 }
 
-struct ds3231_ctrl_sts {
+struct ctrl_sts {
 	bool osf;
 	bool en_32khz;
 	bool bsy;
 	bool a1f;
 	bool a2f;
 };
-static int ds3231_ctrl_sts_to_buf(const struct ds3231_ctrl_sts *ctrl, uint8_t *buf)
+static int ctrl_sts_to_buf(const struct ctrl_sts *ctrl, uint8_t *buf)
 {
 	if (ctrl->a1f) {
 		*buf |= DS3231_BITS_CTRL_STS_ALARM_1_FLAG;
@@ -184,12 +184,12 @@ static int ds3231_ctrl_sts_to_buf(const struct ds3231_ctrl_sts *ctrl, uint8_t *b
 	}
 	return 0;
 }
-static int modify_ctrl_sts(const struct device *dev, const struct ds3231_ctrl_sts *ctrl, const uint8_t bitmask)
+static int modify_ctrl_sts(const struct device *dev, const struct ctrl_sts *ctrl, const uint8_t bitmask)
 {
 	const uint8_t reg = DS3231_REG_CTRL_STS;
 	uint8_t buf = 0;
 
-	int err = ds3231_ctrl_sts_to_buf(ctrl, &buf);
+	int err = ctrl_sts_to_buf(ctrl, &buf);
 	if (err != 0) {
 		return err;
 	}
@@ -200,49 +200,68 @@ static int get_ctrl_sts(const struct device *dev, uint8_t *buf)
 {
 	return i2c_get_registers(dev, DS3231_REG_CTRL_STS, buf, 1);
 }
-static int ds3231_set_ctrl_sts(const struct device *dev, const struct ds3231_ctrl_sts *ctrl)
+static int set_ctrl_sts(const struct device *dev, const struct ctrl_sts *ctrl)
 {
 	return modify_ctrl_sts(dev, ctrl, 255);
 }
 
-struct ds3231_settings {
-	bool osc;
-	bool intctrl_or_sqw;
-	enum freq freq_sqw;
-	bool freq_32khz;
-	bool alarm_1;
-	bool alarm_2;
+struct settings {
+	bool osc; /* bit 0 */
+	bool intctrl_or_sqw; /* bit 1 */
+	enum freq freq_sqw; /* bit 2 */
+	bool freq_32khz; /* bit 3 */
+	bool alarm_1; /* bit 4 */
+	bool alarm_2; /* bit 5 */
 };
-static int ds3231_set_settings(const struct device *dev, const struct ds3231_settings *conf)
+static int modify_settings(const struct device *dev, struct settings *conf, uint8_t mask)
 {
-	const struct ds3231_ctrl ctrl = {
-		conf->osc,
-		false,
-		conf->freq_sqw,
-		conf->intctrl_or_sqw,
-		conf->alarm_1,
-		conf->alarm_2
-	};
+	struct ctrl ctrl;
+	uint8_t ctrl_mask = 0;
 
-	const struct ds3231_ctrl_sts ctrl_sts = {
-		false,
-		conf->freq_32khz,
-		false,
-		false,
-		false
-	};
+	struct ctrl_sts ctrl_sts;
+	uint8_t ctrl_sts_mask = 0;
 
-	int err = ds3231_set_ctrl(dev, &ctrl);
+	if (mask & BIT(0)) {
+		ctrl.en_osc = conf->osc;
+		ctrl_mask |= DS3231_BITS_CTRL_EOSC;
+	}
+	if (mask & BIT(1)) {
+		ctrl.intctrl = !conf->intctrl_or_sqw;
+		ctrl_mask |= DS3231_BITS_CTRL_BBSQW;
+	}
+	if (mask & BIT(2)) {
+		ctrl.sqw_freq = conf->freq_sqw;
+		ctrl_mask |= DS3231_BITS_CTRL_RS1;
+		ctrl_mask |= DS3231_BITS_CTRL_RS2;
+	}
+	if (mask & BIT(3)) {
+		ctrl_sts.en_32khz = conf->freq_32khz;
+		ctrl_sts_mask |= DS3231_BITS_CTRL_STS_32_EN;
+	}
+	if (mask & BIT(4)) {
+		ctrl.en_alarm_1 = conf->alarm_1;
+		ctrl_mask |= DS3231_BITS_CTRL_ALARM_1_EN;
+	}
+	if (mask & BIT(4)) {
+		ctrl.en_alarm_2 = conf->alarm_2;
+		ctrl_mask |= DS3231_BITS_CTRL_ALARM_2_EN;
+	}
+
+	int err = modify_ctrl(dev, &ctrl, ctrl_mask);
 	if (err != 0) {
 		LOG_ERR("Couldn't set control register.");
 		return -EIO;
 	}
-	err = ds3231_set_ctrl_sts(dev, &ctrl_sts);
+	err = modify_ctrl_sts(dev, &ctrl_sts, ctrl_sts_mask);
 	if (err != 0) {
 		LOG_ERR("Couldn't set status register.");
 		return -EIO;
 	}
 	return 0;
+}
+static int set_settings(const struct device *dev, struct settings *conf)
+{
+	return modify_settings(dev, conf, 255);
 }
 
 static int rtc_time_to_alarm_buf(const struct rtc_time *tm, int id, const uint16_t mask, uint8_t *buf)
@@ -425,7 +444,7 @@ static int alarm_get_supported_fields(const struct device *dev, uint16_t id, uin
 
 static int modify_alarm_state(const struct device *dev, uint16_t id, bool state)
 {
-	struct ds3231_ctrl ctrl;
+	struct ctrl ctrl;
 	uint8_t ctrl_mask = 0;
 
 	switch (id) {
@@ -442,7 +461,7 @@ static int modify_alarm_state(const struct device *dev, uint16_t id, bool state)
 	}
 
 	/* TODO: move to modifiable settings when implemented */
-	return ds3231_modify_ctrl(dev, &ctrl, ctrl_mask);
+	return modify_ctrl(dev, &ctrl, ctrl_mask);
 }
 static int alarm_set_time(const struct device *dev, uint16_t id, uint16_t mask, const struct rtc_time *timeptr)
 {
@@ -553,7 +572,7 @@ static int alarm_is_pending(const struct device *dev, uint16_t id)
 
 	bool state = buf & mask;
 	if (state) {
-		const struct ds3231_ctrl_sts ctrl = {
+		const struct ctrl_sts ctrl = {
 			.a1f = false,
 			.a2f = false
 		};
@@ -584,7 +603,7 @@ static int alarm_set_callback(const struct device *dev, uint16_t id, rtc_alarm_c
 		return -EINVAL;
 	}
 
-	struct ds3231_drv_data *data = dev->data;
+	struct drv_data *data = dev->data;
 	data->alarms[id] = (struct alarm){
 		cb,
 		user_data
@@ -594,10 +613,9 @@ static int alarm_set_callback(const struct device *dev, uint16_t id, rtc_alarm_c
 }
 static void k_alarm_cbs_h(struct k_work *work)
 {
-	struct ds3231_drv_data *data = CONTAINER_OF(work, struct ds3231_drv_data, work);
+	struct drv_data *data = CONTAINER_OF(work, struct drv_data, work);
 	const struct device *dev = data->dev;
 	
-	/* FIXME: states stay false all the time! */
 	bool states[2];
 	get_alarm_states(dev, states);
 
@@ -612,12 +630,12 @@ static void k_alarm_cbs_h(struct k_work *work)
 
 static void isw_isr(const struct device *port, struct gpio_callback *cb, uint32_t pins)
 {
-	struct ds3231_drv_data *data = CONTAINER_OF(cb, struct ds3231_drv_data, isw_cb_data);
+	struct drv_data *data = CONTAINER_OF(cb, struct drv_data, isw_cb_data);
 
 	k_work_submit(&data->work);
 }
 
-static const struct rtc_driver_api ds3231_driver_api = {
+static const struct rtc_driver_api driver_api = {
 	.set_time = set_time,
 	.get_time = get_time,
 
@@ -639,15 +657,15 @@ static const struct rtc_driver_api ds3231_driver_api = {
 #endif /* CONFIG_RTC_CALIBRATION */
 };
 
-static int ds3231_init(const struct device *dev)
+static int init(const struct device *dev)
 {
-	struct ds3231_drv_data *data = dev->data;
+	struct drv_data *data = dev->data;
 	k_sem_init(&data->lock, 1, 1);
 	data->dev = dev;
 	data->alarms[0] = (struct alarm){NULL, NULL};
 	data->alarms[1] = (struct alarm){NULL, NULL};
 
-	const struct ds3231_drv_conf *config = dev->config;
+	const struct drv_conf *config = dev->config;
 	if (!i2c_is_ready_dt(&config->i2c_bus)) {
 		LOG_ERR("I2C bus not ready.");
 		return -ENODEV;
@@ -657,16 +675,14 @@ static int ds3231_init(const struct device *dev)
 		return -ENODEV;
 	}
 
-	struct ds3231_settings conf = {
+	struct settings conf = {
 		.osc = true,
 		.intctrl_or_sqw = false,
 		.freq_sqw = FREQ_1000,
 		.freq_32khz = false,
-		/* TODO: don't turn off alarms, only modify settings and leave these alone */
-		.alarm_1 = false,
-		.alarm_2 = false
 	};
-	int err = ds3231_set_settings(dev, &conf);
+	uint8_t mask = 255 & ~BIT(4) & ~BIT(5);
+	int err = modify_settings(dev, &conf, mask);
 	if (err != 0) {
 		LOG_ERR("Failed to init settings.");
 		return err;
@@ -696,15 +712,15 @@ static int ds3231_init(const struct device *dev)
 
 /* TODO: decide which pins are needed, ifdef them... */
 #define DS3231_DEFINE(inst)                                                                        \
-        static struct ds3231_drv_data ds3231_drv_data_##inst;                                              \
-        static const struct ds3231_drv_conf ds3231_drv_conf_##inst = {                             \
+        static struct drv_data drv_data_##inst;                                              \
+        static const struct drv_conf drv_conf_##inst = {                             \
                 .i2c_bus = I2C_DT_SPEC_INST_GET(inst),                                             \
                 .isw_gpios = GPIO_DT_SPEC_INST_GET(inst, isw_gpios),                               \
                 .freq_32k_gpios = GPIO_DT_SPEC_INST_GET_OR(inst, freq_32khz_gpios, {})             \
         };                                                                                         \
-        DEVICE_DT_INST_DEFINE(inst, &ds3231_init, NULL, &ds3231_drv_data_##inst,                   \
-                              &ds3231_drv_conf_##inst, POST_KERNEL, CONFIG_RTC_INIT_PRIORITY,      \
-                              &ds3231_driver_api);
+        DEVICE_DT_INST_DEFINE(inst, &init, NULL, &drv_data_##inst,                   \
+                              &drv_conf_##inst, POST_KERNEL, CONFIG_RTC_INIT_PRIORITY,      \
+                              &driver_api);
 
 
 DT_INST_FOREACH_STATUS_OKAY(DS3231_DEFINE)
