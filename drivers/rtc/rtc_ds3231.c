@@ -258,20 +258,22 @@ static int rtc_time_to_alarm_buf(const struct rtc_time *tm, int id, const uint16
 
 	if (mask & RTC_ALARM_TIME_MASK_MINUTE) {
 		buf[1] = bin2bcd(tm->tm_min) & DS3231_BITS_TIME_MINUTES;
+	} else {
 		buf[1] |= DS3231_BITS_ALARM_RATE;
 	}
 
 	if (mask & RTC_ALARM_TIME_MASK_HOUR) {
 		buf[2] = bin2bcd(tm->tm_hour) & DS3231_BITS_TIME_HOURS;
+	} else {
 		buf[2] |= DS3231_BITS_ALARM_RATE;
 	}
 
 	if (mask & RTC_ALARM_TIME_MASK_WEEKDAY) {
 		buf[3] = bin2bcd(tm->tm_wday) & DS3231_BITS_TIME_DAY_OF_WEEK;
 		buf[3] |= DS3231_BITS_ALARM_DATE_W_OR_M;
-		buf[3] |= DS3231_BITS_ALARM_RATE;
 	} else if (mask & RTC_ALARM_TIME_MASK_MONTHDAY) {
 		buf[3] = bin2bcd(tm->tm_mday) & DS3231_BITS_TIME_DATE;
+	} else {
 		buf[3] |= DS3231_BITS_ALARM_RATE;
 	}
 
@@ -279,6 +281,7 @@ static int rtc_time_to_alarm_buf(const struct rtc_time *tm, int id, const uint16
 		case 0:
 			if (mask & RTC_ALARM_TIME_MASK_SECOND) {
 				buf[0] = bin2bcd(tm->tm_sec) & DS3231_BITS_TIME_SECONDS;
+			} else {
 				buf[0] |= DS3231_BITS_ALARM_RATE;
 			}
 			break;
@@ -287,7 +290,6 @@ static int rtc_time_to_alarm_buf(const struct rtc_time *tm, int id, const uint16
 				return -EINVAL;
 			}
 
-			/* shift the array to the left */
 			for (int i = 0; i < 3; i++) {
 				buf[i] = buf[i + 1];
 			}
@@ -299,6 +301,7 @@ static int rtc_time_to_alarm_buf(const struct rtc_time *tm, int id, const uint16
 
 	return 0;
 }
+
 static int modify_alarm_time(const struct device *dev, int id, const struct rtc_time *tm, const uint8_t mask)
 {
 	uint8_t start_reg;
@@ -473,15 +476,15 @@ static int alarm_buf_to_rtc_time(uint8_t *buf, int id, struct rtc_time *tm, uint
 	}
 
 	*mask = 0;
-	if (buf[1] & DS3231_BITS_ALARM_RATE) {
+	if (!(buf[1] & DS3231_BITS_ALARM_RATE)) {
 		tm->tm_min = bcd2bin(buf[1] & DS3231_BITS_TIME_MINUTES);
 		*mask |= RTC_ALARM_TIME_MASK_MINUTE;
 	}
-	if (buf[2] & DS3231_BITS_ALARM_RATE) {
+	if (!(buf[2] & DS3231_BITS_ALARM_RATE)) {
 		tm->tm_hour = bcd2bin(buf[2] & DS3231_BITS_TIME_HOURS);
 		*mask |= RTC_ALARM_TIME_MASK_HOUR;
 	}
-	if (buf[3] & DS3231_BITS_ALARM_RATE) {
+	if (!(buf[3] & DS3231_BITS_ALARM_RATE)) {
 		if (buf[3] & DS3231_BITS_ALARM_DATE_W_OR_M) {
 			tm->tm_wday = bcd2bin(buf[3] & DS3231_BITS_TIME_DAY_OF_WEEK);
 			*mask |= RTC_ALARM_TIME_MASK_WEEKDAY;
@@ -490,7 +493,7 @@ static int alarm_buf_to_rtc_time(uint8_t *buf, int id, struct rtc_time *tm, uint
 			*mask |= RTC_ALARM_TIME_MASK_MONTHDAY;
 		}
 	}
-	if (buf[0] & DS3231_BITS_ALARM_RATE) {
+	if (!(buf[0] & DS3231_BITS_ALARM_RATE)) {
 		tm->tm_sec = bcd2bin(buf[0] & DS3231_BITS_TIME_SECONDS);
 		*mask |= RTC_ALARM_TIME_MASK_SECOND;
 	}
@@ -539,10 +542,10 @@ static int alarm_is_pending(const struct device *dev, uint16_t id)
 	uint8_t mask = 0;
 	switch (id) {
 		case 0:
-			mask &= DS3231_BITS_CTRL_STS_ALARM_1_FLAG;
+			mask |= DS3231_BITS_CTRL_STS_ALARM_1_FLAG;
 			break;
 		case 1:
-			mask &= DS3231_BITS_CTRL_STS_ALARM_2_FLAG;
+			mask |= DS3231_BITS_CTRL_STS_ALARM_2_FLAG;
 			break;
 		default:
 			return -EINVAL;
@@ -600,7 +603,9 @@ static void k_alarm_cbs_h(struct k_work *work)
 
 	for (int i = 0; i < ALARM_COUNT; i++) {
 		if (states[i]) {
-			data->alarms[i].cb(dev, i, data->alarms[i].user_data);
+			if (data->alarms[i].cb) {
+				data->alarms[i].cb(dev, i, data->alarms[i].user_data);
+			}
 		}
 	}
 }
@@ -639,6 +644,8 @@ static int ds3231_init(const struct device *dev)
 	struct ds3231_drv_data *data = dev->data;
 	k_sem_init(&data->lock, 1, 1);
 	data->dev = dev;
+	data->alarms[0] = (struct alarm){NULL, NULL};
+	data->alarms[1] = (struct alarm){NULL, NULL};
 
 	const struct ds3231_drv_conf *config = dev->config;
 	if (!i2c_is_ready_dt(&config->i2c_bus)) {
