@@ -4,13 +4,12 @@
  * Copyright (c) 2024 Gergo Vari <work@varigergo.hu>
  */
 
-/* TODO: implement modifiable settings */
 /* TODO: implement configurable settings */
+/* TODO: make sure we're in 24h mode */
 /* TODO: implement get_temp */
-/* TODO: implement 24h/ampm modes */
-/* TODO: handle century bit */
 /* TODO: decide if we need to deal with aging offset */
 /* TODO: decide if we need to deal with CONV */
+/* TODO: handle century bit */
 /* TODO: implement device power management */
 
 #include <zephyr/drivers/rtc/rtc_ds3231.h>
@@ -33,8 +32,14 @@ struct alarm {
 	void *user_data;
 };
 
+struct update {
+	rtc_update_callback cb;
+	void *user_data;
+};
+
 struct drv_data {
 	struct alarm alarms[ALARM_COUNT];
+	struct update update;
 	struct k_sem lock;
 	struct gpio_callback isw_cb_data;
 	struct k_work work;
@@ -616,6 +621,10 @@ static void k_alarm_cbs_h(struct k_work *work)
 	struct drv_data *data = CONTAINER_OF(work, struct drv_data, work);
 	const struct device *dev = data->dev;
 	
+	if (data->update.cb) {
+		data->update.cb(dev, data->update.user_data);
+	}
+
 	bool states[2];
 	get_alarm_states(dev, states);
 
@@ -626,6 +635,16 @@ static void k_alarm_cbs_h(struct k_work *work)
 			}
 		}
 	}
+}
+
+static int update_set_callback(const struct device *dev, rtc_update_callback cb, void *user_data)
+{
+	struct drv_data *data = dev->data;
+	data->update = (struct update){
+		cb,
+		user_data
+	};
+	return 0;
 }
 
 static void isw_isr(const struct device *port, struct gpio_callback *cb, uint32_t pins)
@@ -648,7 +667,7 @@ static const struct rtc_driver_api driver_api = {
 #endif /* CONFIG_RTC_ALARM */
 
 #ifdef CONFIG_RTC_UPDATE
-	/*.update_set_callback = update_set_callback,*/
+	.update_set_callback = update_set_callback,
 #endif /* CONFIG_RTC_UPDATE */
 
 #ifdef CONFIG_RTC_CALIBRATION
@@ -664,6 +683,7 @@ static int init(const struct device *dev)
 	data->dev = dev;
 	data->alarms[0] = (struct alarm){NULL, NULL};
 	data->alarms[1] = (struct alarm){NULL, NULL};
+	data->update = (struct update){NULL, NULL};
 
 	const struct drv_conf *config = dev->config;
 	if (!i2c_is_ready_dt(&config->i2c_bus)) {
