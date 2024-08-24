@@ -4,10 +4,9 @@
  * Copyright (c) 2024 Gergo Vari <work@varigergo.hu>
  */
 
-/* TODO: implement device power management */
-/* TODO: revise file structure */
 /* TODO: implement aging offset with calibration */
 /* TODO: implement get_temp */
+/* TODO: implement user mode? */
 /* TODO: handle century bit, external storage? */
 
 #include <zephyr/drivers/rtc/rtc_ds3231.h>
