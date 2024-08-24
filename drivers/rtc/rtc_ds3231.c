@@ -4,7 +4,6 @@
  * Copyright (c) 2024 Gergo Vari <work@varigergo.hu>
  */
 
-/* TODO: settings mask defines */
 /* TODO: implement device power management */
 /* TODO: revise file structure */
 /* TODO: implement aging offset with calibration */
@@ -233,28 +232,28 @@ static int modify_settings(const struct device *dev, struct settings *conf, uint
 	struct ctrl_sts ctrl_sts;
 	uint8_t ctrl_sts_mask = 0;
 
-	if (mask & BIT(0)) {
+	if (mask & DS3231_BITS_STS_OSC) {
 		ctrl.en_osc = conf->osc;
 		ctrl_mask |= DS3231_BITS_CTRL_EOSC;
 	}
-	if (mask & BIT(1)) {
+	if (mask & DS3231_BITS_STS_INTCTRL) {
 		ctrl.intctrl = !conf->intctrl_or_sqw;
 		ctrl_mask |= DS3231_BITS_CTRL_BBSQW;
 	}
-	if (mask & BIT(2)) {
+	if (mask & DS3231_BITS_STS_SQW) {
 		ctrl.sqw_freq = conf->freq_sqw;
 		ctrl_mask |= DS3231_BITS_CTRL_RS1;
 		ctrl_mask |= DS3231_BITS_CTRL_RS2;
 	}
-	if (mask & BIT(3)) {
+	if (mask & DS3231_BITS_STS_32KHZ) {
 		ctrl_sts.en_32khz = conf->freq_32khz;
 		ctrl_sts_mask |= DS3231_BITS_CTRL_STS_32_EN;
 	}
-	if (mask & BIT(4)) {
+	if (mask & DS3231_BITS_STS_ALARM_1) {
 		ctrl.en_alarm_1 = conf->alarm_1;
 		ctrl_mask |= DS3231_BITS_CTRL_ALARM_1_EN;
 	}
-	if (mask & BIT(4)) {
+	if (mask & DS3231_BITS_STS_ALARM_2) {
 		ctrl.en_alarm_2 = conf->alarm_2;
 		ctrl_mask |= DS3231_BITS_CTRL_ALARM_2_EN;
 	}
@@ -475,11 +474,11 @@ static int modify_alarm_state(const struct device *dev, uint16_t id, bool state)
 	switch (id) {
 		case 0:
 			conf.alarm_1 = state;
-			mask = BIT(4);
+			mask = DS3231_BITS_STS_ALARM_1;
 			break;
 		case 1:
 			conf.alarm_2 = state;
-			mask = BIT(5);
+			mask = DS3231_BITS_STS_ALARM_2;
 			break;
 		default:
 			return -EINVAL;
@@ -763,7 +762,7 @@ static int init_settings(const struct device *dev) {
 #endif
 		.freq_32khz = false,
 	};
-	uint8_t mask = 255 & ~BIT(4) & ~BIT(5);
+	uint8_t mask = 255 & ~DS3231_BITS_STS_ALARM_1 & ~DS3231_BITS_STS_ALARM_2;
 	int err = modify_settings(dev, &conf, mask);
 	if (err != 0) {
 		return err;

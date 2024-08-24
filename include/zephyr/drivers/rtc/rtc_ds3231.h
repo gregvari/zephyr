@@ -108,3 +108,12 @@
 /* Temperature bitmasks */
 #define DS3231_BITS_TEMP_MSB GENMASK(6, 0) /* integer portion */
 #define DS3231_BITS_TEMP_LSB GENMASK(7, 6) /* fractional portion */
+
+/* Settings bitmasks */
+#define DS3231_BITS_STS_OSC 	BIT(0)
+#define DS3231_BITS_STS_INTCTRL	BIT(1)
+#define DS3231_BITS_STS_SQW 	BIT(2)
+#define DS3231_BITS_STS_32KHZ 	BIT(3)
+#define DS3231_BITS_STS_ALARM_1 BIT(4)
+#define DS3231_BITS_STS_ALARM_2 BIT(5)
+
