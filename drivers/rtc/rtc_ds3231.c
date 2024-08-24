@@ -4,8 +4,8 @@
  * Copyright (c) 2024 Gergo Vari <work@varigergo.hu>
  */
 
-/* TODO: implement configurable settings */
 /* TODO: make sure we're in 24h mode */
+/* TODO: implement configurable settings */
 /* TODO: implement get_temp */
 /* TODO: decide if we need to deal with aging offset */
 /* TODO: decide if we need to deal with CONV */
@@ -26,20 +26,28 @@ LOG_MODULE_REGISTER(ds3231, CONFIG_RTC_LOG_LEVEL);
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/i2c.h>
 
+#ifdef CONFIG_RTC_ALARM
 #define ALARM_COUNT 2
 struct alarm {
 	rtc_alarm_callback cb;
 	void *user_data;
 };
+#endif
 
+#ifdef CONFIG_RTC_UPDATE
 struct update {
 	rtc_update_callback cb;
 	void *user_data;
 };
+#endif
 
 struct drv_data {
+#ifdef CONFIG_RTC_ALARM
 	struct alarm alarms[ALARM_COUNT];
+#endif
+#ifdef CONFIG_RTC_UPDATE
 	struct update update;
+#endif
 	struct k_sem lock;
 	struct gpio_callback isw_cb_data;
 	struct k_work work;
@@ -427,6 +435,7 @@ static int get_time(const struct device *dev, struct rtc_time *timeptr)
 	return buf_to_rtc_time(buf, timeptr);
 }
 
+#ifdef CONFIG_RTC_ALARM
 static int alarm_get_supported_fields(const struct device *dev, uint16_t id, uint16_t *mask)
 {
 	*mask = RTC_ALARM_TIME_MASK_MONTHDAY
@@ -616,14 +625,9 @@ static int alarm_set_callback(const struct device *dev, uint16_t id, rtc_alarm_c
 
 	return 0;
 }
-static void k_alarm_cbs_h(struct k_work *work)
-{
-	struct drv_data *data = CONTAINER_OF(work, struct drv_data, work);
-	const struct device *dev = data->dev;
-	
-	if (data->update.cb) {
-		data->update.cb(dev, data->update.user_data);
-	}
+
+static void check_alarms(const struct device *dev) {
+	struct drv_data *data = dev->data;
 
 	bool states[2];
 	get_alarm_states(dev, states);
@@ -636,7 +640,18 @@ static void k_alarm_cbs_h(struct k_work *work)
 		}
 	}
 }
+static int init_alarms(struct drv_data *data) {
+	data->alarms[0] = (struct alarm){NULL, NULL};
+	data->alarms[1] = (struct alarm){NULL, NULL};
+	return 0;
+}
+#endif
 
+#ifdef CONFIG_RTC_UPDATE
+static int init_update(struct drv_data *data) {
+	data->update = (struct update){NULL, NULL};
+	return 0;
+}
 static int update_set_callback(const struct device *dev, rtc_update_callback cb, void *user_data)
 {
 	struct drv_data *data = dev->data;
@@ -646,13 +661,64 @@ static int update_set_callback(const struct device *dev, rtc_update_callback cb,
 	};
 	return 0;
 }
+static void update_callback(const struct device *dev) {
+	struct drv_data *data = dev->data;
+	if (data->update.cb) {
+		data->update.cb(dev, data->update.user_data);
+	}
+}
+#endif /* CONFIG_RTC_UPDATE */
 
+#if defined(CONFIG_RTC_UPDATE) || defined(CONFIG_RTC_ALARM)
+static void isw_h(struct k_work *work)
+{
+	struct drv_data *data = CONTAINER_OF(work, struct drv_data, work);
+	const struct device *dev = data->dev;
+	
+#ifdef CONFIG_RTC_UPDATE
+	update_callback(dev);
+#endif /* CONFIG_RTC_UPDATE */
+
+#ifdef CONFIG_RTC_ALARM
+	check_alarms(dev);
+#endif /* CONFIG_RTC_ALARM */
+
+}
 static void isw_isr(const struct device *port, struct gpio_callback *cb, uint32_t pins)
 {
 	struct drv_data *data = CONTAINER_OF(cb, struct drv_data, isw_cb_data);
 
 	k_work_submit(&data->work);
 }
+static int init_isw(const struct drv_conf *config, struct drv_data *data) {
+	if (!gpio_is_ready_dt(&config->isw_gpios)) {
+		LOG_ERR("ISW GPIO pin is not ready.");
+		return -ENODEV;
+	}
+
+	k_work_init(&data->work, isw_h);
+
+	int err = gpio_pin_configure_dt(&(config->isw_gpios), GPIO_INPUT);
+	if (err != 0) {
+		LOG_ERR("Couldn't configure ISW GPIO pin.");
+		return err;
+	}
+	err = gpio_pin_interrupt_configure_dt(&(config->isw_gpios), GPIO_INT_EDGE_TO_ACTIVE);
+	if (err != 0) {
+		LOG_ERR("Couldn't configure ISW interrupt.");
+		return err;
+	}
+
+	gpio_init_callback(&data->isw_cb_data, isw_isr, BIT((config->isw_gpios).pin));
+	err = gpio_add_callback((config->isw_gpios).port, &data->isw_cb_data);
+	if (err != 0) {
+		LOG_ERR("Couldn't add ISW interrupt callback.");
+		return err;
+	}
+
+	return 0;
+}
+#endif /* defined(CONFIG_RTC_UPDATE) || defined(CONFIG_RTC_ALARM) */
 
 static const struct rtc_driver_api driver_api = {
 	.set_time = set_time,
@@ -676,61 +742,81 @@ static const struct rtc_driver_api driver_api = {
 #endif /* CONFIG_RTC_CALIBRATION */
 };
 
-static int init(const struct device *dev)
-{
-	struct drv_data *data = dev->data;
-	k_sem_init(&data->lock, 1, 1);
-	data->dev = dev;
-	data->alarms[0] = (struct alarm){NULL, NULL};
-	data->alarms[1] = (struct alarm){NULL, NULL};
-	data->update = (struct update){NULL, NULL};
-
-	const struct drv_conf *config = dev->config;
-	if (!i2c_is_ready_dt(&config->i2c_bus)) {
-		LOG_ERR("I2C bus not ready.");
-		return -ENODEV;
-	}
-	if (!gpio_is_ready_dt(&config->isw_gpios)) {
-		LOG_ERR("ISW GPIO pin is not ready.");
-		return -ENODEV;
-	}
-
+static int init_settings(const struct device *dev) {
 	struct settings conf = {
 		.osc = true,
+#ifdef CONFIG_RTC_UPDATE
 		.intctrl_or_sqw = false,
 		.freq_sqw = FREQ_1000,
+#else
+		.intctrl_or_sqw = true,
+#endif
 		.freq_32khz = false,
 	};
 	uint8_t mask = 255 & ~BIT(4) & ~BIT(5);
 	int err = modify_settings(dev, &conf, mask);
 	if (err != 0) {
-		LOG_ERR("Failed to init settings.");
-		return err;
-	}
-	
-	k_work_init(&data->work, k_alarm_cbs_h);
-
-	err = gpio_pin_configure_dt(&(config->isw_gpios), GPIO_INPUT);
-	if (err != 0) {
-		LOG_ERR("Couldn't configure ISW GPIO pin.");
-		return err;
-	}
-	err = gpio_pin_interrupt_configure_dt(&(config->isw_gpios), GPIO_INT_EDGE_TO_ACTIVE);
-	if (err != 0) {
-		LOG_ERR("Couldn't configure ISW interrupt.");
-		return err;
-	}
-
-	gpio_init_callback(&data->isw_cb_data, isw_isr, BIT((config->isw_gpios).pin));
-	err = gpio_add_callback((config->isw_gpios).port, &data->isw_cb_data);
-	if (err != 0) {
-		LOG_ERR("Couldn't add ISW interrupt callback.");
 		return err;
 	}
 	return 0;
 }
 
-/* TODO: decide which pins are needed, ifdef them... */
+static int init_i2c(const struct drv_conf *config, struct drv_data *data) {
+	k_sem_init(&data->lock, 1, 1);
+	if (!i2c_is_ready_dt(&config->i2c_bus)) {
+		LOG_ERR("I2C bus not ready.");
+		return -ENODEV;
+	}
+	return 0;
+}
+
+static int init(const struct device *dev)
+{
+	int err = 0;
+
+	const struct drv_conf *config = dev->config;
+	struct drv_data *data = dev->data;
+
+#ifdef CONFIG_RTC_ALARM
+	err = init_alarms(data);
+	if (err != 0) {
+		LOG_ERR("Failed to init alarms.");
+		return err;
+	}
+#endif
+
+#ifdef CONFIG_RTC_UPDATE
+	err = init_update(data);
+	if (err != 0) {
+		LOG_ERR("Failed to init update callback.");
+		return err;
+	}
+#endif
+	
+	err = init_i2c(config, data);
+	if (err != 0) {
+		LOG_ERR("Failed to init I2C.");
+		return err;
+	}
+
+	err = init_settings(dev);
+	if (err != 0) {
+		LOG_ERR("Failed to init settings.");
+		return err;
+	}
+
+#if defined(CONFIG_RTC_UPDATE) || defined(CONFIG_RTC_ALARM)
+	data->dev = dev;
+	err = init_isw(config, data);
+	if (err != 0) {
+		LOG_ERR("Initing ISW interrupt failed!");
+		return err;
+	}
+#endif /* defined(CONFIG_RTC_UPDATE) || defined(CONFIG_RTC_ALARM) */
+
+	return 0;
+}
+
 #define DS3231_DEFINE(inst)                                                                        \
         static struct drv_data drv_data_##inst;                                              \
         static const struct drv_conf drv_conf_##inst = {                             \
