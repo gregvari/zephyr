@@ -11,6 +11,8 @@
 /* TODO: decide if we need to deal with CONV */
 /* TODO: handle century bit */
 /* TODO: implement device power management */
+/* TODO: settings mask defines */
+/* TODO: revise file structure */
 
 #include <zephyr/drivers/rtc/rtc_ds3231.h>
 
@@ -260,6 +262,8 @@ static int modify_settings(const struct device *dev, struct settings *conf, uint
 		ctrl_mask |= DS3231_BITS_CTRL_ALARM_2_EN;
 	}
 
+	ctrl.conv = false;
+
 	int err = modify_ctrl(dev, &ctrl, ctrl_mask);
 	if (err != 0) {
 		LOG_ERR("Couldn't set control register.");
@@ -458,24 +462,23 @@ static int alarm_get_supported_fields(const struct device *dev, uint16_t id, uin
 
 static int modify_alarm_state(const struct device *dev, uint16_t id, bool state)
 {
-	struct ctrl ctrl;
-	uint8_t ctrl_mask = 0;
+	struct settings conf;
+	uint8_t mask = 0;
 
 	switch (id) {
 		case 0:
-			ctrl.en_alarm_1 = state;
-			ctrl_mask |= DS3231_BITS_CTRL_ALARM_1_EN;
+			conf.alarm_1 = state;
+			mask = BIT(4);
 			break;
 		case 1:
-			ctrl.en_alarm_2 = state;
-			ctrl_mask |= DS3231_BITS_CTRL_ALARM_2_EN;
+			conf.alarm_2 = state;
+			mask = BIT(5);
 			break;
 		default:
 			return -EINVAL;
 	}
 
-	/* TODO: move to modifiable settings when implemented */
-	return modify_ctrl(dev, &ctrl, ctrl_mask);
+	return modify_settings(dev, &conf, mask);
 }
 static int alarm_set_time(const struct device *dev, uint16_t id, uint16_t mask, const struct rtc_time *timeptr)
 {
