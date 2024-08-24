@@ -751,6 +751,7 @@ static int init_settings(const struct device *dev) {
 #else
 		.intctrl_or_sqw = true,
 #endif
+		/* TODO: see if gpio assigned, if yes turn on */
 		.freq_32khz = false,
 	};
 	uint8_t mask = 255 & ~DS3231_BITS_STS_ALARM_1 & ~DS3231_BITS_STS_ALARM_2;
@@ -769,6 +770,41 @@ static int init_i2c(const struct drv_conf *config, struct drv_data *data) {
 	}
 	return 0;
 }
+
+#ifdef CONFIG_PM_DEVICE
+static int pm_action(const struct device *dev, enum pm_device_action action)
+{
+	int err = 0;
+	switch (action) {
+		case PM_DEVICE_ACTION_SUSPEND: {
+			struct settings conf = {
+				.osc = true,
+				.intctrl_or_sqw = false,
+				.freq_sqw = FREQ_1000,
+				.freq_32khz = false
+			};
+			uint8_t mask = 255 & ~DS3231_BITS_STS_ALARM_1 & ~DS3231_BITS_STS_ALARM_2;
+			err = modify_settings(dev, &conf, mask);
+			if (err != 0) {
+				return err;
+			}
+			break;
+		}
+		case PM_DEVICE_ACTION_RESUME: {
+			/* TODO: trigger a temp CONV */
+			err = init_settings(dev);
+			if (err != 0) {
+				return err;
+			}
+			break;
+		}
+		default:
+			return -ENOTSUP;
+	}
+
+	return 0;
+}
+#endif /* CONFIG_PM_DEVICE */
 
 static int init(const struct device *dev)
 {
@@ -823,7 +859,8 @@ static int init(const struct device *dev)
                 .i2c_bus = I2C_DT_SPEC_INST_GET(inst),                                             \
                 .isw_gpios = GPIO_DT_SPEC_INST_GET(inst, isw_gpios),                               \
                 .freq_32k_gpios = GPIO_DT_SPEC_INST_GET_OR(inst, freq_32khz_gpios, {})             \
-        };                                                                                         \
+        };											\
+	PM_DEVICE_DT_INST_DEFINE(inst, pm_action);  \
         DEVICE_DT_INST_DEFINE(inst, &init, NULL, &drv_data_##inst,                   \
                               &drv_conf_##inst, POST_KERNEL, CONFIG_RTC_INIT_PRIORITY,      \
                               &driver_api);
