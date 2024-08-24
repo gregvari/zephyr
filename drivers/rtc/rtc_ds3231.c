@@ -8,7 +8,7 @@
 /* TODO: revise file structure */
 /* TODO: implement aging offset with calibration */
 /* TODO: implement get_temp */
-/* TODO: handle century bit */
+/* TODO: handle century bit, external storage? */
 
 #include <zephyr/drivers/rtc/rtc_ds3231.h>
 
@@ -73,6 +73,8 @@ static int i2c_get_registers(const struct device *dev, uint8_t start_reg, uint8_
 {
 	struct drv_data *data = dev->data;
 	const struct drv_conf *config = dev->config;
+	
+	/* FIXME: bad start_reg/buf_size values break i2c for that run */
 
 	(void)k_sem_take(&data->lock, K_FOREVER);
 	int err = i2c_burst_read_dt(&config->i2c_bus, start_reg, buf, buf_size);
@@ -277,90 +279,6 @@ static int set_settings(const struct device *dev, struct settings *conf)
 	return modify_settings(dev, conf, 255);
 }
 
-static int rtc_time_to_alarm_buf(const struct rtc_time *tm, int id, const uint16_t mask, uint8_t *buf)
-{
-	if ((mask & RTC_ALARM_TIME_MASK_WEEKDAY) && (mask & RTC_ALARM_TIME_MASK_MONTHDAY)) {
-		LOG_ERR("rtc_time_to_alarm_buf: Mask is invalid (%d)!\n", mask);
-		return -EINVAL;
-	}
-	if (id < 0 || id >= 2) {
-		LOG_ERR("rtc_time_to_alarm_buf: Alarm ID is out of range (%d)!\n", id);
-		return -EINVAL;
-	}
-
-	if (mask & RTC_ALARM_TIME_MASK_MINUTE) {
-		buf[1] = bin2bcd(tm->tm_min) & DS3231_BITS_TIME_MINUTES;
-	} else {
-		buf[1] |= DS3231_BITS_ALARM_RATE;
-	}
-
-	if (mask & RTC_ALARM_TIME_MASK_HOUR) {
-		buf[2] = bin2bcd(tm->tm_hour) & DS3231_BITS_TIME_HOURS;
-	} else {
-		buf[2] |= DS3231_BITS_ALARM_RATE;
-	}
-
-	if (mask & RTC_ALARM_TIME_MASK_WEEKDAY) {
-		buf[3] = bin2bcd(tm->tm_wday) & DS3231_BITS_TIME_DAY_OF_WEEK;
-		buf[3] |= DS3231_BITS_ALARM_DATE_W_OR_M;
-	} else if (mask & RTC_ALARM_TIME_MASK_MONTHDAY) {
-		buf[3] = bin2bcd(tm->tm_mday) & DS3231_BITS_TIME_DATE;
-	} else {
-		buf[3] |= DS3231_BITS_ALARM_RATE;
-	}
-
-	switch (id) {
-		case 0:
-			if (mask & RTC_ALARM_TIME_MASK_SECOND) {
-				buf[0] = bin2bcd(tm->tm_sec) & DS3231_BITS_TIME_SECONDS;
-			} else {
-				buf[0] |= DS3231_BITS_ALARM_RATE;
-			}
-			break;
-		case 1:
-			if (mask & RTC_ALARM_TIME_MASK_SECOND) {
-				return -EINVAL;
-			}
-
-			for (int i = 0; i < 3; i++) {
-				buf[i] = buf[i + 1];
-			}
-
-			break;
-		default:
-			return -EINVAL;
-	}
-
-	return 0;
-}
-
-static int modify_alarm_time(const struct device *dev, int id, const struct rtc_time *tm, const uint8_t mask)
-{
-	uint8_t start_reg;
-	size_t buf_size;
-
-	switch (id) {
-		case 0:
-			start_reg = DS3231_REG_ALARM_1_SECONDS;
-			buf_size = 4;
-			break;
-		case 1:
-			start_reg = DS3231_REG_ALARM_2_MINUTES;
-			buf_size = 3;
-			break;
-		default:
-			return -EINVAL;
-	}
-
-	uint8_t buf[buf_size];
-	int err = rtc_time_to_alarm_buf(tm, id, mask, buf);
-	if (err != 0) {
-		return err;
-	}
-
-	return i2c_set_registers(dev, start_reg, buf, buf_size);
-}
-
 static int rtc_time_to_buf(const struct rtc_time *tm, uint8_t *buf)
 {
 	buf[0] = bin2bcd(tm->tm_sec)  & DS3231_BITS_TIME_SECONDS;
@@ -446,6 +364,14 @@ static int get_time(const struct device *dev, struct rtc_time *timeptr)
 }
 
 #ifdef CONFIG_RTC_ALARM
+struct alarm_details {
+	uint8_t start_reg;
+	size_t buf_size;
+};
+static struct alarm_details alarms[] = {
+    {DS3231_REG_ALARM_1_SECONDS, 4},
+    {DS3231_REG_ALARM_2_MINUTES, 3}
+};
 static int alarm_get_supported_fields(const struct device *dev, uint16_t id, uint16_t *mask)
 {
 	*mask = RTC_ALARM_TIME_MASK_MONTHDAY
@@ -464,6 +390,81 @@ static int alarm_get_supported_fields(const struct device *dev, uint16_t id, uin
 	}
 
 	return 0;
+}
+
+static int rtc_time_to_alarm_buf(const struct rtc_time *tm, int id, const uint16_t mask, uint8_t *buf)
+{
+	if ((mask & RTC_ALARM_TIME_MASK_WEEKDAY) && (mask & RTC_ALARM_TIME_MASK_MONTHDAY)) {
+		LOG_ERR("rtc_time_to_alarm_buf: Mask is invalid (%d)!\n", mask);
+		return -EINVAL;
+	}
+	if (id < 0 || id >= 2) {
+		LOG_ERR("rtc_time_to_alarm_buf: Alarm ID is out of range (%d)!\n", id);
+		return -EINVAL;
+	}
+
+	if (mask & RTC_ALARM_TIME_MASK_MINUTE) {
+		buf[1] = bin2bcd(tm->tm_min) & DS3231_BITS_TIME_MINUTES;
+	} else {
+		buf[1] |= DS3231_BITS_ALARM_RATE;
+	}
+
+	if (mask & RTC_ALARM_TIME_MASK_HOUR) {
+		buf[2] = bin2bcd(tm->tm_hour) & DS3231_BITS_TIME_HOURS;
+	} else {
+		buf[2] |= DS3231_BITS_ALARM_RATE;
+	}
+
+	if (mask & RTC_ALARM_TIME_MASK_WEEKDAY) {
+		buf[3] = bin2bcd(tm->tm_wday) & DS3231_BITS_TIME_DAY_OF_WEEK;
+		buf[3] |= DS3231_BITS_ALARM_DATE_W_OR_M;
+	} else if (mask & RTC_ALARM_TIME_MASK_MONTHDAY) {
+		buf[3] = bin2bcd(tm->tm_mday) & DS3231_BITS_TIME_DATE;
+	} else {
+		buf[3] |= DS3231_BITS_ALARM_RATE;
+	}
+
+	switch (id) {
+		case 0:
+			if (mask & RTC_ALARM_TIME_MASK_SECOND) {
+				buf[0] = bin2bcd(tm->tm_sec) & DS3231_BITS_TIME_SECONDS;
+			} else {
+				buf[0] |= DS3231_BITS_ALARM_RATE;
+			}
+			break;
+		case 1:
+			if (mask & RTC_ALARM_TIME_MASK_SECOND) {
+				return -EINVAL;
+			}
+
+			for (int i = 0; i < 3; i++) {
+				buf[i] = buf[i + 1];
+			}
+
+			break;
+		default:
+			return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int modify_alarm_time(const struct device *dev, int id, const struct rtc_time *tm, const uint8_t mask)
+{
+	if (id >= ALARM_COUNT) {
+		return -EINVAL;
+	}
+	struct alarm_details details = alarms[id];
+	uint8_t start_reg = details.start_reg;
+	size_t buf_size = details.buf_size;
+
+	uint8_t buf[buf_size];
+	int err = rtc_time_to_alarm_buf(tm, id, mask, buf);
+	if (err != 0) {
+		return err;
+	}
+
+	return i2c_set_registers(dev, start_reg, buf, buf_size);
 }
 
 static int modify_alarm_state(const struct device *dev, uint16_t id, bool state)
@@ -548,21 +549,12 @@ static int alarm_buf_to_rtc_time(uint8_t *buf, int id, struct rtc_time *tm, uint
 }
 static int alarm_get_time(const struct device *dev, uint16_t id, uint16_t *mask, struct rtc_time *timeptr)
 {
-	uint8_t start_reg;
-	size_t buf_size;
-	/* TODO: remove code duplication */
-	switch (id) {
-		case 0:
-			start_reg = DS3231_REG_ALARM_1_SECONDS;
-			buf_size = 4;
-			break;
-		case 1:
-			start_reg = DS3231_REG_ALARM_2_MINUTES;
-			buf_size = 3;
-			break;
-		default:
-			return -EINVAL;
+	if (id >= ALARM_COUNT) {
+		return -EINVAL;
 	}
+	struct alarm_details details = alarms[id];
+	uint8_t start_reg = details.start_reg;
+	size_t buf_size = details.buf_size;
 
 	uint8_t buf[4];
 	int err = i2c_get_registers(dev, start_reg, buf, buf_size);
