@@ -4,15 +4,12 @@
  * Copyright (c) 2024 Gergo Vari <work@varigergo.hu>
  */
 
-/* TODO: make sure we're in 24h mode */
-/* TODO: implement configurable settings */
-/* TODO: implement get_temp */
-/* TODO: decide if we need to deal with aging offset */
-/* TODO: decide if we need to deal with CONV */
-/* TODO: handle century bit */
-/* TODO: implement device power management */
 /* TODO: settings mask defines */
+/* TODO: implement device power management */
 /* TODO: revise file structure */
+/* TODO: implement aging offset with calibration */
+/* TODO: implement get_temp */
+/* TODO: handle century bit */
 
 #include <zephyr/drivers/rtc/rtc_ds3231.h>
 
@@ -416,7 +413,17 @@ static int buf_to_rtc_time(const uint8_t *buf, struct rtc_time *timeptr)
 
 	timeptr->tm_sec = bcd2bin(buf[0] & DS3231_BITS_TIME_SECONDS);
 	timeptr->tm_min = bcd2bin(buf[1] & DS3231_BITS_TIME_MINUTES);
-	timeptr->tm_hour = bcd2bin(buf[2] & DS3231_BITS_TIME_HOURS);
+	
+	int hour = buf[2] & DS3231_BITS_TIME_HOURS;
+	if (hour & DS3231_BITS_TIME_12HR) {
+		bool pm = hour & DS3231_BITS_TIME_PM;
+		hour &= ~DS3231_BITS_TIME_12HR;
+		hour &= ~DS3231_BITS_TIME_PM;
+		timeptr->tm_hour = bcd2bin(hour + 12*pm);
+	} else {
+		timeptr->tm_hour = bcd2bin(hour);
+	}
+
 	timeptr->tm_wday = bcd2bin(buf[3] & DS3231_BITS_TIME_DAY_OF_WEEK);
 	timeptr->tm_mday = bcd2bin(buf[4] & DS3231_BITS_TIME_DATE);
 	timeptr->tm_mon = bcd2bin(buf[5] & DS3231_BITS_TIME_MONTH);
