@@ -4,9 +4,9 @@
  * Copyright (c) 2024 Gergo Vari <work@varigergo.hu>
  */
 
-/* TODO: implement aging offset with calibration */
 /* TODO: implement get_temp */
 /* TODO: implement user mode? */
+/* TODO: implement aging offset with calibration */
 /* TODO: handle century bit, external storage? */
 
 #include <zephyr/drivers/rtc/rtc_ds3231.h>
@@ -742,7 +742,7 @@ static const struct rtc_driver_api driver_api = {
 #endif /* CONFIG_RTC_CALIBRATION */
 };
 
-static int init_settings(const struct device *dev) {
+static int init_settings(const struct device *dev, const struct drv_conf *config) {
 	struct settings conf = {
 		.osc = true,
 #ifdef CONFIG_RTC_UPDATE
@@ -751,8 +751,7 @@ static int init_settings(const struct device *dev) {
 #else
 		.intctrl_or_sqw = true,
 #endif
-		/* TODO: see if gpio assigned, if yes turn on */
-		.freq_32khz = false,
+		.freq_32khz = config->freq_32k_gpios.port,
 	};
 	uint8_t mask = 255 & ~DS3231_BITS_STS_ALARM_1 & ~DS3231_BITS_STS_ALARM_2;
 	int err = modify_settings(dev, &conf, mask);
@@ -792,7 +791,8 @@ static int pm_action(const struct device *dev, enum pm_device_action action)
 		}
 		case PM_DEVICE_ACTION_RESUME: {
 			/* TODO: trigger a temp CONV */
-			err = init_settings(dev);
+			const struct drv_conf *config = dev->config;
+			err = init_settings(dev, config);
 			if (err != 0) {
 				return err;
 			}
@@ -835,7 +835,7 @@ static int init(const struct device *dev)
 		return err;
 	}
 
-	err = init_settings(dev);
+	err = init_settings(dev, config);
 	if (err != 0) {
 		LOG_ERR("Failed to init settings.");
 		return err;
@@ -858,7 +858,7 @@ static int init(const struct device *dev)
         static const struct drv_conf drv_conf_##inst = {                             \
                 .i2c_bus = I2C_DT_SPEC_INST_GET(inst),                                             \
                 .isw_gpios = GPIO_DT_SPEC_INST_GET(inst, isw_gpios),                               \
-                .freq_32k_gpios = GPIO_DT_SPEC_INST_GET_OR(inst, freq_32khz_gpios, {})             \
+                .freq_32k_gpios = GPIO_DT_SPEC_INST_GET_OR(inst, freq_32khz_gpios, {NULL})             \
         };											\
 	PM_DEVICE_DT_INST_DEFINE(inst, pm_action);  \
         DEVICE_DT_INST_DEFINE(inst, &init, NULL, &drv_data_##inst,                   \
