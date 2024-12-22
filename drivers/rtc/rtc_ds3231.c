@@ -1,10 +1,9 @@
 /*
  * SPDX-License-Identifier: Apache-2.0
  *
- * Copyright (c) 2024 Gergo Vari <work@varigergo.hu>
+ * Copyright (c) 2024 Gergo Vari
  */
 
-/* TODO: implement get_temp */
 /* TODO: implement user mode? */
 /* TODO: implement aging offset with calibration */
 /* TODO: handle century bit, external storage? */

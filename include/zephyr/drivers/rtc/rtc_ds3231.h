@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: Apache-2.0
  * 
- * Copyright (c) 2024 Gergo Vari <work@varigergo.hu>
+ * Copyright (c) 2024 Gergo Vari
  */
 
 #define DT_DRV_COMPAT maxim_ds3231
@@ -37,11 +37,6 @@
 
 /* Aging offset register */
 #define DS3231_REG_AGING_OFFSET 0x10
-
-/* Temperature registers */
-#define DS3231_REG_TEMP_MSB 0x11
-#define DS3231_REG_TEMP_LSB 0x12
-
 
 
 /*           	*
@@ -104,10 +99,6 @@
 
 /* Aging offset bitmask */
 #define DS3231_BITS_DATA BIT(6, 0)
-
-/* Temperature bitmasks */
-#define DS3231_BITS_TEMP_MSB GENMASK(6, 0) /* integer portion */
-#define DS3231_BITS_TEMP_LSB GENMASK(7, 6) /* fractional portion */
 
 /* Settings bitmasks */
 #define DS3231_BITS_STS_OSC 	BIT(0)
