@@ -10,6 +10,8 @@
 #include <zephyr/init.h>
 
 #include <zephyr/drivers/sensor.h>
+#include <zephyr/rtio/work.h>
+
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/i2c.h>
 
@@ -23,6 +25,8 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(DS3231, CONFIG_SENSOR_LOG_LEVEL);
 
+#include <inttypes.h>
+
 #if DT_NUM_INST_STATUS_OKAY(DT_DRV_COMPAT) == 0
 #warning "DS3231 driver enabled without any devices"
 #endif
@@ -30,8 +34,7 @@ LOG_MODULE_REGISTER(DS3231, CONFIG_SENSOR_LOG_LEVEL);
 struct drv_data {
 	struct k_sem lock;
 	const struct device *dev;
-	int32_t temp_int;
-	int32_t temp_frac;
+	uint16_t raw_temp;
 };
 
 struct drv_conf {
@@ -52,40 +55,47 @@ static int i2c_get_registers(const struct device *dev, uint8_t start_reg, uint8_
 	return err;
 }
 
+int ds3231_read_temp(const struct device *dev, uint16_t *raw_temp)
+{
+	uint8_t buf[2];
+	int err = i2c_get_registers(dev, DS3231_REG_TEMP_MSB, buf, 2);
+	*raw_temp = ((uint16_t)((buf[0]) << 2) | (buf[1] >> 6));
+
+	if (err != 0) {
+		return err;
+	}
+
+	return 0;
+}
+
 /* Fetch and Get (will be deprecated) */
 
 int ds3231_sample_fetch(const struct device *dev, enum sensor_channel chan)
 {
 	struct drv_data *data = dev->data;
-	int err;
 	
-	const size_t buf_size = 2;
-	uint8_t buf[buf_size];
-
-	err = i2c_get_registers(dev, DS3231_REG_TEMP_MSB, buf, buf_size);
+	int err = ds3231_read_temp(dev, &(data->raw_temp));
 	if (err != 0) {
+		printf("ds3231 sample fetch failed %d", err);
 		return err;
 	}
-	
-	int16_t itemp = ( buf[0] << 8 | (buf[1] & 0xC0) );
-	double temp = ( (double)itemp / 256.0 );
-	
-	data->temp_int = (int)temp;
-	data->temp_frac = (int)((temp - data->temp_int) * 100) / pow(10, -6);
 
 	return 0;
 }
 
-static int ds3231_channel_get(const struct device *dev,
-			      enum sensor_channel chan,
-			      struct sensor_value *val)
+static int ds3231_channel_get(const struct device *dev, enum sensor_channel chan, struct sensor_value *val)
 {
 	struct drv_data *data = dev->data;
 
 	switch (chan) {
 		case SENSOR_CHAN_AMBIENT_TEMP:
-			val->val1 = data->temp_int;
-			val->val2 = data->temp_frac;
+			const uint16_t raw_temp = data->raw_temp;
+
+			val->val1 = (int8_t)(raw_temp & GENMASK(8, 2)) >> 2;
+
+			uint8_t frac = raw_temp & 3;
+			val->val2 = (frac * 25) * pow(10, 4);
+				
 			break;
 		default:
 			return -ENOTSUP;
@@ -95,13 +105,61 @@ static int ds3231_channel_get(const struct device *dev,
 }
 
 /* Read and Decode */
-/*
+
+struct ds3231_header {
+	uint64_t timestamp;
+} __attribute__((__packed__));
+
+struct ds3231_edata {
+	struct ds3231_header header;
+	uint16_t raw_temp;
+};
+
+void ds3231_submit_sync(struct rtio_iodev_sqe *iodev_sqe)
+{
+	uint32_t min_buf_len = sizeof(struct ds3231_edata);
+	int rc;
+	uint8_t *buf;
+	uint32_t buf_len;
+
+	const struct sensor_read_config *cfg = iodev_sqe->sqe.iodev->data;
+	const struct device *dev = cfg->sensor;
+	const struct sensor_chan_spec *const channels = cfg->channels;
+	
+
+	rc = rtio_sqe_rx_buf(iodev_sqe, min_buf_len, min_buf_len, &buf, &buf_len);
+	if (rc != 0) {
+		LOG_ERR("Failed to get a read buffer of size %u bytes", min_buf_len);
+		rtio_iodev_sqe_err(iodev_sqe, rc);
+		return;
+	}
+
+	struct ds3231_edata *edata;
+	edata = (struct ds3231_edata *)buf;
+
+	if (channels[0].chan_type != SENSOR_CHAN_AMBIENT_TEMP) {
+		return;	
+	}
+	
+	uint16_t raw_temp;
+	rc = ds3231_read_temp(dev, &raw_temp);
+	if (rc != 0) {
+		LOG_ERR("Failed to fetch samples");
+		rtio_iodev_sqe_err(iodev_sqe, rc);
+		return;
+	}
+	edata->header.timestamp = k_ticks_to_ns_floor64(k_uptime_ticks());
+	edata->raw_temp = raw_temp;
+
+	rtio_iodev_sqe_ok(iodev_sqe, 0);
+}
+
 void ds3231_submit(const struct device *dev, struct rtio_iodev_sqe *iodev_sqe)
 {
 	struct rtio_work_req *req = rtio_work_req_alloc();
 
 	if (req == NULL) {
-		LOG_ERR("RTIO work item allocation failed. Consider to increase "
+		printf("RTIO work item allocation failed. Consider to increase "
 			"CONFIG_RTIO_WORKQ_POOL_ITEMS.");
 		rtio_iodev_sqe_err(iodev_sqe, -ENOMEM);
 		return;
@@ -110,105 +168,63 @@ void ds3231_submit(const struct device *dev, struct rtio_iodev_sqe *iodev_sqe)
 	rtio_work_req_submit(req, iodev_sqe, ds3231_submit_sync);
 }
 
-
-
-static int ds3231_decoder_get_frame_count(const uint8_t *buffer, struct sensor_chan_spec chan_spec,
-					  uint16_t *frame_count)
+static int ds3231_decoder_get_frame_count(const uint8_t *buffer, struct sensor_chan_spec chan_spec, uint16_t *frame_count)
 {
-	const struct ds3231_encoded_data *edata = (const struct ds3231_encoded_data *)buffer;
-	int32_t ret = -ENOTSUP;
-
+	int err = -ENOTSUP;
 	if (chan_spec.chan_idx != 0) {
-		return ret;
+		return err;
 	}
 
 	switch (chan_spec.chan_type) {
-	case SENSOR_CHAN_AMBIENT_TEMP:
-		*frame_count = edata->has_temp ? 1 : 0;
-		break;
-	case SENSOR_CHAN_PRESS:
-		*frame_count = edata->has_press ? 1 : 0;
-		break;
-	case SENSOR_CHAN_HUMIDITY:
-		*frame_count = edata->has_humidity ? 1 : 0;
-		break;
-	default:
-		return ret;
+		case SENSOR_CHAN_AMBIENT_TEMP:
+			*frame_count = 1;
+			break;
+		default:
+			return err;
 	}
 
 	if (*frame_count > 0) {
-		ret = 0;
+		err = 0;
 	}
 
-	return ret;
+	return err;
 }
 
-static int ds3231_decoder_get_size_info(struct sensor_chan_spec chan_spec, size_t *base_size,
-					size_t *frame_size)
+static int ds3231_decoder_get_size_info(struct sensor_chan_spec chan_spec, size_t *base_size, size_t *frame_size)
 {
 	switch (chan_spec.chan_type) {
-	case SENSOR_CHAN_AMBIENT_TEMP:
-	case SENSOR_CHAN_HUMIDITY:
-	case SENSOR_CHAN_PRESS:
-		*base_size = sizeof(struct sensor_q31_sample_data);
-		*frame_size = sizeof(struct sensor_q31_sample_data);
-		return 0;
-	default:
-		return -ENOTSUP;
+		case SENSOR_CHAN_AMBIENT_TEMP:
+			*base_size = sizeof(struct sensor_q31_sample_data);
+			*frame_size = sizeof(struct sensor_q31_sample_data);
+			return 0;
+		default:
+			return -ENOTSUP;
 	}
 }
 
-static int ds3231_decoder_decode(const uint8_t *buffer, struct sensor_chan_spec chan_spec,
-				 uint32_t *fit, uint16_t max_count, void *data_out)
+static int ds3231_decoder_decode(const uint8_t *buffer, struct sensor_chan_spec chan_spec, uint32_t *fit, uint16_t max_count, void *data_out)
 {
-	const struct ds3231_encoded_data *edata = (const struct ds3231_encoded_data *)buffer;
-
 	if (*fit != 0) {
 		return 0;
 	}
 
 	struct sensor_q31_data *out = data_out;
-
-	out->header.base_timestamp_ns = edata->header.timestamp;
 	out->header.reading_count = 1;
+	
+	const struct ds3231_edata *edata = (const struct ds3231_edata *)buffer;
 
 	switch (chan_spec.chan_type) {
-	case SENSOR_CHAN_AMBIENT_TEMP:
-		if (edata->has_temp) {
-			int32_t readq = edata->reading.comp_temp * pow(2, 31 - BME280_TEMP_SHIFT);
-			int32_t convq = BME280_TEMP_CONV * pow(2, 31 - BME280_TEMP_SHIFT);
+		case SENSOR_CHAN_AMBIENT_TEMP:
+			out->header.base_timestamp_ns = edata->header.timestamp;
+			
+			const uint16_t raw_temp = edata->raw_temp;
 
-			out->readings[0].temperature =
-				(int32_t)((((int64_t)readq) << (31 - BME280_TEMP_SHIFT)) /
-					  ((int64_t)convq));
-			out->shift = BME280_TEMP_SHIFT;
-		} else {
-			return -ENODATA;
-		}
-		break;
-	case SENSOR_CHAN_PRESS:
-		if (edata->has_press) {
-			int32_t readq = edata->reading.comp_press;
-			int32_t convq = BME280_PRESS_CONV_KPA * pow(2, 31 - BME280_PRESS_SHIFT);
+			out->shift = 8 - 1;
+			out->readings[0].temperature = (q31_t)raw_temp << (32 - 10);
 
-			out->readings[0].pressure =
-				(int32_t)((((int64_t)readq) << (31 - BME280_PRESS_SHIFT)) /
-					  ((int64_t)convq));
-			out->shift = BME280_PRESS_SHIFT;
-		} else {
-			return -ENODATA;
-		}
-		break;
-	case SENSOR_CHAN_HUMIDITY:
-		if (edata->has_humidity) {
-			out->readings[0].humidity = edata->reading.comp_humidity;
-			out->shift = BME280_HUM_SHIFT;
-		} else {
-			return -ENODATA;
-		}
-		break;
-	default:
-		return -EINVAL;
+			break;
+		default:
+			return -EINVAL;
 	}
 
 	*fit = 1;
@@ -228,7 +244,7 @@ int ds3231_get_decoder(const struct device *dev, const struct sensor_decoder_api
 	*decoder = &SENSOR_DECODER_NAME();
 
 	return 0;
-}*/
+}
 
 static int init_i2c(const struct drv_conf *config, struct drv_data *data) {
 	k_sem_init(&data->lock, 1, 1);
@@ -259,12 +275,10 @@ static int init(const struct device *dev)
 static DEVICE_API(sensor, driver_api) = {
 	.sample_fetch = ds3231_sample_fetch,
 	.channel_get = ds3231_channel_get,
-	/*
 #ifdef CONFIG_SENSOR_ASYNC_API
 	.submit = ds3231_submit,
 	.get_decoder = ds3231_get_decoder,
 #endif
-*/
 };
 
 #define DS3231_DEFINE(inst)						\
